@@ -1,0 +1,157 @@
+/**
+ * This plugin's own durable output, and the call correlation that makes a
+ * record locatable.
+ *
+ * Nothing here touches the session log. `Session.append()` offers no way to
+ * set the envelope's `ignorable` flag, so an out-of-repo event type is written
+ * without it and the user's next resume throws `SessionFormatUnsupportedError`
+ * and refuses the whole session. The plugin is therefore read-side with
+ * respect to the log, and every durable record goes to the JSONL file named by
+ * `auditLog`.
+ *
+ * Because the `SessionEvent` envelope carries only `type`, `seq`, `time` and
+ * `data`, each record carries its own identity: `sessionId`, `turn`, `step`,
+ * `callId`, and a producer-minted `decisionId`.
+ * @module dsh-dlp/sink
+ */
+
+import { appendFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import type { RedactedSpan } from './redaction.ts'
+
+declare const decisionIdBrand: unique symbol
+
+/** Producer-minted id correlating one decision across records. */
+export type DecisionId = string & { readonly [decisionIdBrand]: true }
+
+/**
+ * Mint a decision id.
+ * @returns an id unique to one guard verdict or redaction pass.
+ */
+export function newDecisionId(): DecisionId {
+  return `dlp-${randomUUID()}` as DecisionId
+}
+
+/** Payload version carried inside every record this plugin writes. */
+export const RECORD_VERSION = 1
+
+/** What produced one audit record. */
+export type AuditKind =
+  | 'guard-deny'
+  | 'pre-execute-deny'
+  | 'result-redaction'
+  | 'telemetry-redaction'
+  | 'audit-failure'
+
+/** One durable record. Never carries matched secret text. */
+export interface AuditRecord {
+  readonly v: number
+  /** ISO-8601 capture time. */
+  readonly time: string
+  readonly kind: AuditKind
+  readonly decisionId: DecisionId
+  readonly sessionId?: string
+  readonly turn?: number
+  readonly step?: number
+  readonly callId?: string
+  readonly rootCallId?: string
+  readonly tool?: string
+  /** Redacted regions: rule identity, offsets, and a keyed hash only. */
+  readonly spans?: readonly RedactedSpan[]
+  /** Model-facing denial text; contains rule identities, never matched values. */
+  readonly reason?: string
+  /** Set when the scanned input exceeded the byte cap. */
+  readonly truncatedScan?: boolean
+  /** Telemetry record channel, for `telemetry-redaction`. */
+  readonly channel?: string
+}
+
+/** Append-only JSONL sink for this plugin's decisions. */
+export class AuditSink {
+  readonly #path: string
+  readonly #onFailure: (error: unknown) => void
+
+  /**
+   * @param path - absolute path of the JSONL file to append to.
+   * @param onFailure - notified when a write fails; a broken sink never changes a verdict.
+   */
+  constructor(path: string, onFailure: (error: unknown) => void) {
+    this.#path = path
+    this.#onFailure = onFailure
+  }
+
+  /**
+   * Append one record.
+   *
+   * A write failure is reported and swallowed on purpose: the sink is
+   * evidence, not enforcement, and letting a full disk turn every tool call
+   * into a denial trades a confidentiality control for an availability
+   * outage. A guard that throws would also skip `tools/post-execute` and so
+   * disable redaction for that call.
+   * @param record - the decision to record.
+   */
+  write(record: AuditRecord): void {
+    try {
+      appendFileSync(this.#path, `${JSON.stringify(record)}\n`)
+    } catch (error: unknown) {
+      this.#onFailure(error)
+    }
+  }
+}
+
+/** Turn and step of one in-flight tool call. */
+export interface CallPosition {
+  readonly turn: number
+  readonly step: number
+}
+
+/**
+ * Remembers where each in-flight tool call sits in the session.
+ *
+ * `Agent` exposes no turn or step, and the tool pipeline hands listeners only
+ * a `ToolExecution`. The `tool/call` session event carries `turn`, `step` and
+ * `callId` together, so following the session firehose is the only way to
+ * label a record with its position.
+ */
+export class CallCorrelator {
+  readonly #positions = new Map<string, CallPosition>()
+  readonly #limit: number
+
+  /**
+   * @param limit - maximum remembered calls; the oldest entry is dropped past it.
+   */
+  constructor(limit = 512) {
+    this.#limit = limit
+  }
+
+  /**
+   * Record one call's position.
+   * @param callId - the call's id from the `tool/call` event.
+   * @param position - the turn and step that event reported.
+   */
+  note(callId: string, position: CallPosition): void {
+    this.#positions.set(callId, position)
+    if (this.#positions.size > this.#limit) {
+      const oldest = this.#positions.keys().next()
+      /* v8 ignore next -- reached only past the limit, so the map is never empty here. */
+      if (!oldest.done) this.#positions.delete(oldest.value)
+    }
+  }
+
+  /**
+   * Forget one call.
+   * @param callId - the call whose result has been committed.
+   */
+  forget(callId: string): void {
+    this.#positions.delete(callId)
+  }
+
+  /**
+   * Look one call's position up.
+   * @param callId - the call to locate.
+   * @returns its turn and step, or `undefined` when the call was never seen.
+   */
+  lookup(callId: string): CallPosition | undefined {
+    return this.#positions.get(callId)
+  }
+}
