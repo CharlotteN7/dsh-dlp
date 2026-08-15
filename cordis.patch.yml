@@ -1,0 +1,22 @@
+# Bundle layer applied when a profile lists this package in dsh.profile.bundles.
+# The row references the package by NAME so Node resolution finds the installed
+# code from the profile directory.
+#
+# `dshHomePath` is provided on the root context by the app boot, so a layer's
+# `!!js` config expressions can reach it. A profile's own cordis.patch.yml
+# overrides this row by id; a patch REPLACES a row's whole `config`, so an
+# override must restate every key it wants to keep.
+#
+# The guard floor has no configuration here on purpose: it is a security
+# invariant, not a deployment-varying tunable.
+- insert:
+    - id: dsh-dlp
+      name: 'dsh-dlp'
+      config:
+        auditLog: !!js dshHomePath('dsh-dlp.audit.jsonl')
+        redactionKeyFile: !!js dshHomePath('dsh-dlp.redaction-key')
+        maxScanBytes: 1048576
+        breadthTier: true
+        resultRedaction: true
+        telemetryRedaction: true
+        redactTelemetryWorkspacePaths: true
