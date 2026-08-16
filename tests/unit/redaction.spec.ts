@@ -66,6 +66,7 @@ describe('redacting one string', () => {
   it('expands an advisory span that under-covers the secret', async () => {
     // Verified behavior of @secretlint/secretlint-rule-aws: the reported range
     // covers the assignment prefix, not the whole 40-character secret.
+    // 40 invented characters in an AWS secret key's shape; never a live credential.
     const secret = 'kL9xQ2mZ7pR4tY6wA1sD3fG5hJ8kL0nM2bV4cX6z'
     const source = `aws_secret_access_key = ${secret}`
     const { detections } = await scanWithSecretlint(source)
