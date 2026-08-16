@@ -59,7 +59,7 @@ export interface Detection {
 /** Outcome of one scan. */
 export interface ScanResult {
   readonly detections: readonly Detection[]
-  /** Whether the input exceeded the byte cap and was scanned only in part. */
+  /** Whether tier 2 saw only part of the input because of the byte cap. */
   readonly truncated: boolean
 }
 
@@ -91,26 +91,31 @@ export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/private-key-block', version: 1, severity: 'critical', pattern: /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )*PRIVATE KEY-----/g },
   { id: 'dsh-dlp/json-web-token', version: 1, severity: 'high', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
   { id: 'dsh-dlp/credential-url', version: 1, severity: 'high', pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@[^\s/]+/gi },
+  // Webhook URLs are bearer credentials whose path segment is the secret. They
+  // are in tier 1 rather than left to secretlint because the telemetry seam is
+  // synchronous and cannot reach tier 2 at all.
+  { id: 'dsh-dlp/slack-webhook-url', version: 1, severity: 'critical', pattern: /\bhttps:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9/_+-]{10,}/g },
+  { id: 'dsh-dlp/discord-webhook-url', version: 1, severity: 'critical', pattern: /\bhttps:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_-]{10,}/g },
+  { id: 'dsh-dlp/teams-webhook-url', version: 1, severity: 'critical', pattern: /\bhttps:\/\/[A-Za-z0-9.-]*webhook\.office\.com\/webhookb2\/[A-Za-z0-9@/_-]{10,}/g },
   { id: 'dsh-dlp/secret-assignment', version: 1, severity: 'medium', pattern: /\b(?:api[_-]?key|secret[_-]?key|client[_-]?secret|password|passwd|access[_-]?token|auth[_-]?token)\b\s*[=:]\s*["']?[A-Za-z0-9/+=_-]{16,}["']?/gi },
 ] as const
 
 /**
- * Scan text with tier 1. Pure, synchronous, no I/O.
+ * Scan text with tier 1. Pure, synchronous, no I/O, and never capped: a table
+ * of anchored regular expressions costs a linear pass, so there is no reason
+ * to stop scanning where tier 2 has to. `truncated` is therefore always
+ * `false` here and only tier 2 can set it.
  * @param text - the string to scan.
  * @param rules - the rule table to apply; defaults to {@link SYNC_RULES}.
- * @param maxScanBytes - cap on scanned characters; input beyond it is not examined.
- * @returns every match, ordered by start offset, and whether the input was capped.
+ * @returns every match, ordered by start offset.
  */
 export function scanSync(
   text: string,
   rules: readonly SyncRule[] = SYNC_RULES,
-  maxScanBytes = Number.POSITIVE_INFINITY,
 ): ScanResult {
-  const truncated = text.length > maxScanBytes
-  const window = truncated ? text.slice(0, maxScanBytes) : text
   const detections: Detection[] = []
   for (const rule of rules) {
-    for (const match of window.matchAll(rule.pattern)) {
+    for (const match of text.matchAll(rule.pattern)) {
       // `matchAll` on a global pattern always reports an index.
       const start = match.index
       detections.push({
@@ -123,7 +128,7 @@ export function scanSync(
     }
   }
   detections.sort(byPosition)
-  return { detections, truncated }
+  return { detections, truncated: false }
 }
 
 /**
@@ -180,10 +185,11 @@ export async function scanWithSecretlint(
 }
 
 /**
- * Run both tiers over one string and merge their detections.
+ * Run both tiers over one string and merge their detections. Tier 1 sees the
+ * whole string; only tier 2 is capped.
  * @param text - the string to scan.
  * @param rules - tier-1 rule table.
- * @param maxScanBytes - cap on scanned characters.
+ * @param maxScanBytes - cap on characters handed to tier 2.
  * @returns the union of both tiers, ordered by start offset.
  */
 export async function scanAll(
@@ -191,9 +197,9 @@ export async function scanAll(
   rules: readonly SyncRule[] = SYNC_RULES,
   maxScanBytes = Number.POSITIVE_INFINITY,
 ): Promise<ScanResult> {
-  const tier1 = scanSync(text, rules, maxScanBytes)
+  const tier1 = scanSync(text, rules)
   const tier2 = await scanWithSecretlint(text, maxScanBytes)
   const detections = [...tier1.detections, ...tier2.detections]
   detections.sort(byPosition)
-  return { detections, truncated: tier1.truncated || tier2.truncated }
+  return { detections, truncated: tier2.truncated }
 }

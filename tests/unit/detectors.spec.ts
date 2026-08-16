@@ -3,8 +3,12 @@
 import { describe, expect, it } from 'vitest'
 import { scanAll, scanSync, scanWithSecretlint, SYNC_RULES } from '../../src/detectors.ts'
 
+/** Shaped like a Slack bot token; invented for this test, never a live credential. */
 const SLACK = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
+/** Shaped like a Shopify access token; invented for this test, never a live credential. */
 const SHOPIFY = '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'
+/** AWS's own published example access key id, which their scanners treat as fake. */
+const AWS_EXAMPLE_KEY_ID = 'AKIAIOSFODNN7EXAMPLE'
 
 describe('the synchronous rule table', () => {
   it('finds a Slack bot token and reports where it sits', () => {
@@ -25,7 +29,7 @@ describe('the synchronous rule table', () => {
   })
 
   it('reports every match in a string carrying more than one secret', () => {
-    const { detections } = scanSync(`${SLACK} and AKIAZ3TQ7HJ4KLMNOPQR`)
+    const { detections } = scanSync(`${SLACK} and ${AWS_EXAMPLE_KEY_ID}`)
 
     expect(detections.map(detection => detection.ruleId).sort()).toEqual([
       'dsh-dlp/aws-access-key-id',
@@ -44,13 +48,10 @@ describe('the synchronous rule table', () => {
       .toBe('dsh-dlp/credential-url')
   })
 
-  it('marks a scan that hit the byte cap', () => {
-    const padded = `${'x'.repeat(64)} ${SLACK}`
+  it('finds a webhook URL whose path segment is the credential', () => {
+    const webhook = 'https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX'
 
-    const capped = scanSync(padded, SYNC_RULES, 16)
-
-    expect(capped.truncated).toBe(true)
-    expect(capped.detections).toEqual([])
+    expect(scanSync(`SLACK_WEBHOOK=${webhook}`).detections[0]?.ruleId).toBe('dsh-dlp/slack-webhook-url')
   })
 
   it('orders two matches that start together by where they end', () => {
@@ -105,9 +106,18 @@ describe('both tiers together', () => {
     expect([...detections].sort((a, b) => a.start - b.start)).toEqual(detections)
   })
 
-  it('propagates truncation from either tier', async () => {
+  it('reports truncation when tier 2 saw only part of the input', async () => {
     const result = await scanAll('x'.repeat(64), SYNC_RULES, 16)
 
     expect(result.truncated).toBe(true)
+  })
+
+  it('still runs tier 1 past the cap that stops tier 2', async () => {
+    const text = `${'x'.repeat(2000)} ${SLACK}`
+
+    const result = await scanAll(text, SYNC_RULES, 1000)
+
+    expect(result.truncated).toBe(true)
+    expect(result.detections.map(detection => detection.ruleId)).toContain('dsh-dlp/slack-token')
   })
 })
