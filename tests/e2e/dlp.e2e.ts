@@ -295,4 +295,28 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
     expect(String(neutralized[0]?.['sessionId']).length).toBeGreaterThan(0)
     expect(JSON.stringify(result.auditRecords)).not.toContain(payload)
   }, 120_000)
+
+  it('tells the operator that its telemetry redactor cannot run under the shipped default', async () => {
+    // `DSH_TELEMETRY_MODE` is unset, so the base bundle mounts the OTel
+    // backend in DISABLED, no coordinator exists, and a
+    // session-telemetry/record listener mounts and never runs. The plugin says
+    // so on stderr, because ctx.logger's default exporter is an in-memory ring
+    // buffer nothing prints.
+    const result = await runAgent({
+      task: 'say hello',
+      sequence: ['success', 'success'],
+      successText: 'hello',
+      // The harness hard-disables telemetry for every other run, which removes
+      // the row entirely. Putting it back gives this test the shipped
+      // composition: the backend mounted, in its default DISABLED mode.
+      env: { DSH_TELEMETRY_DISABLED: undefined },
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    expect(result.stderr).toContain('telemetryRedaction is enabled')
+    expect(result.stderr).toContain('sharing "disabled"')
+    expect(result.stderr).toContain('this is not a leak')
+    // Informational, not fatal: the run completed and every other seam ran.
+    expect(result.sessionLog.length).toBeGreaterThan(0)
+  }, 120_000)
 })

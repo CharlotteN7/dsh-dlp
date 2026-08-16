@@ -469,3 +469,38 @@ asking for a session log that does not describe what ran.
 **The upstream fix is better** — `Object.defineProperty(execution, 'name', { writable: false })`
 at the mint site, or a scheduler-invariant throw naming the plugin. Either fails at the source
 instead of denying downstream of it.
+
+## 17. The telemetry seam's state is reported from the backend's own disclosure
+
+Finding 008: a `session-telemetry/record` listener mounts and never runs under the shipped
+`DSH_TELEMETRY_MODE=DISABLED`, because the coordinator that dispatches the waterfall is built
+only in `FULL`/`FEEDBACK_ONLY` (`packages/session/session-telemetry-otel/src/index.ts:160-168`,
+`:239`, `:243`). Nothing is exported, so nothing leaks; what is lost is the evidence that a
+mounted redactor works.
+
+**The mode is read, not guessed.** `SessionTelemetryBackend` declares
+`abstract readonly sharing: SessionTelemetrySharingStatus`
+(`packages/session/session-telemetry/src/index.ts:160`) precisely so a consumer can ask
+backend-independently, and `ctx.get('sessionTelemetry')` reads it without an inject
+requirement. `DSH_TELEMETRY_MODE` would have been the wrong thing to read: it is only the base
+bundle's default expression for a `mode` a deployment can set directly, and the CLI's
+`DSH_TELEMETRY_DISABLED` switch removes the row altogether
+(`apps/cli/src/profile-boot.ts:80-83`) — which our own E2E harness sets, and which is how we
+found that the absent-backend case needed its own message.
+
+**Two evaluation points, because one is not conclusive.** At mount, only a backend that is
+already there answers the question; absence cannot be told from a load order. So absence defers
+to the first `session/event`, by which point the harness is running sessions and an absent
+backend really means no dispatcher. It reports once either way.
+
+**Informational, on both channels.** `DISABLED` is the correct posture for most deployments, so
+refusing to mount would be user-hostile and wrong. It goes to `process.stderr` as well as
+`ctx.logger` for the reason §7 already records: the logger's default exporter is an in-memory
+ring buffer and no shipped bundle mounts a console exporter, so a logger-only message is
+invisible on a stock install. The wording says "nothing is being exported, so this is not a
+leak" first, because the failure mode of a scary message here is an operator turning telemetry
+*on* to make it stop.
+
+**The upstream fix is better**: one warning from the disabled branch when a hook exists on that
+waterfall — the same shape as the `feedback/record` warning already there — helps every
+listener, not only this one.

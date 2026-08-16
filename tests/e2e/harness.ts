@@ -112,6 +112,12 @@ export interface AgentRunOptions {
   readonly seedFiles?: Readonly<Record<string, string>>
   /** Extra rows appended to the profile's own patch layer. */
   readonly extraProfilePatch?: string
+  /**
+   * Environment overrides for the agent process. An `undefined` value removes
+   * the variable, which is how a run opts back into a harness default the
+   * harness itself turns off.
+   */
+  readonly env?: Readonly<Record<string, string | undefined>>
   /** Milliseconds before the agent process is killed. */
   readonly timeoutMs?: number
 }
@@ -286,20 +292,26 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       ...options.successText === undefined ? {} : { successText: options.successText },
     })
 
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      DSH_HOME: home,
+      DSH_TELEMETRY_DISABLED: '1',
+      DSH_PERMISSION_MODE: 'danger-full-access',
+      DEEPSEEK_API_KEY: 'mock-key',
+      DEEPSEEK_BASE_URL: server.baseURL,
+      ...options.env,
+    }
+    for (const [name, value] of Object.entries(env)) {
+      if (value === undefined) delete env[name]
+    }
+
     const child = spawn(process.execPath, [
       ...launchArgv(),
       '--profile', 'e2e',
       substitute(options.task),
     ], {
       cwd: DSH_CWD,
-      env: {
-        ...process.env,
-        DSH_HOME: home,
-        DSH_TELEMETRY_DISABLED: '1',
-        DSH_PERMISSION_MODE: 'danger-full-access',
-        DEEPSEEK_API_KEY: 'mock-key',
-        DEEPSEEK_BASE_URL: server.baseURL,
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 

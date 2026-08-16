@@ -26,11 +26,41 @@
  * @module dsh-dlp/telemetry
  */
 
-import type { SessionTelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
+import type { SessionTelemetryRecord, SessionTelemetrySharingStatus } from '@deepseek-ai/dsh-session-telemetry'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { scanSync, type Detection } from './detectors.ts'
 import type { ResolvedPolicy } from './policy.ts'
 import { placeholderFor, redactJson, redactText, type RedactedSpan, type SpanHasher } from './redaction.ts'
+
+/**
+ * What to tell the operator when the redaction seam will never dispatch.
+ *
+ * A `session-telemetry/record` listener mounts successfully and never runs
+ * unless a backend built a coordinator, and the shipped default builds none:
+ * the mode is `DISABLED`, so nothing is exported and nothing is dispatched.
+ * That is the safe posture, not a leak — but an operator who mounts a redactor
+ * under it sees every signal of success and has verified nothing. The
+ * backend's own `sharing` disclosure is the resolved answer, so this never
+ * guesses at `DSH_TELEMETRY_MODE`, which is only the base patch's default
+ * expression for a `mode` a deployment can also set directly.
+ * @param sharing - the mounted backend's disclosure, or `undefined` when no backend is mounted.
+ * @returns the line to report, or `undefined` when the seam does dispatch.
+ */
+export function telemetrySeamNotice(sharing: SessionTelemetrySharingStatus | undefined): string | undefined {
+  const consequence = 'nothing dispatches the session-telemetry/record waterfall and this plugin\'s telemetry'
+    + ' redaction never runs. Nothing is exported in this state, so this is not a leak — it means the redaction'
+    + ' rules are unverified, and they begin running the moment telemetry is turned on. Informational only: the'
+    + ' plugin\'s other seams are unaffected.'
+  switch (sharing) {
+    case 'disabled':
+      return 'dsh-dlp: telemetryRedaction is enabled, but the mounted session-telemetry backend reports sharing'
+        + ` "disabled", so ${consequence}`
+    case undefined:
+      return `dsh-dlp: telemetryRedaction is enabled, but no session-telemetry backend is mounted, so ${consequence}`
+    default:
+      return undefined
+  }
+}
 
 /** Attribute keys whose values are filesystem paths rather than payload text. */
 const PATH_ATTRIBUTES = ['session.cwd'] as const

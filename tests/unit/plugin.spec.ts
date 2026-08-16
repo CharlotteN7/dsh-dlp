@@ -38,19 +38,28 @@ interface StubContext {
   readonly guards: Guard[]
   readonly listeners: Map<string, ((...args: never[]) => unknown)[]>
   readonly errors: string[]
+  /** Lines the plugin reported as notices rather than faults. */
+  readonly notices: string[]
   /** Registration options each listener was registered with, by event name. */
   readonly options: Map<string, (Record<string, unknown> | undefined)[]>
   /** Definitions `ctx.tools.get` resolves; a name absent here reads as an unregistered tool. */
   readonly definitions: Map<string, ToolDefinition>
+  /** Services `ctx.get` resolves; an absent name reads as a service nothing mounted. */
+  readonly services: Map<string, unknown>
 }
 
 function stubContext(): StubContext {
   const guards: Guard[] = []
   const listeners = new Map<string, ((...args: never[]) => unknown)[]>()
   const errors: string[] = []
+  const notices: string[] = []
   const options = new Map<string, (Record<string, unknown> | undefined)[]>()
   const definitions = new Map<string, ToolDefinition>()
+  const services = new Map<string, unknown>()
   const ctx = {
+    get(name: string) {
+      return services.get(name)
+    },
     on(name: string, listener: (...args: never[]) => unknown, registration?: Record<string, unknown>) {
       options.set(name, [...options.get(name) ?? [], registration])
       const existing = listeners.get(name) ?? []
@@ -70,9 +79,12 @@ function stubContext(): StubContext {
         return definitions.get(name)
       },
     },
-    logger: { error: (message: string) => { errors.push(message) } },
+    logger: {
+      error: (message: string) => { errors.push(message) },
+      warn: (message: string) => { notices.push(message) },
+    },
   } as unknown as Context
-  return { ctx, guards, listeners, errors, options, definitions }
+  return { ctx, guards, listeners, errors, notices, options, definitions, services }
 }
 
 /**
@@ -95,10 +107,14 @@ function toolWithOutputSchema(name: string, schema: JsonSchemaNode): ToolDefinit
 }
 
 let counter = 0
-function mount(overrides: Partial<Config> = {}): StubContext & { auditLog: string; records: () => Record<string, unknown>[] } {
+function mount(
+  overrides: Partial<Config> = {},
+  services: Readonly<Record<string, unknown>> = {},
+): StubContext & { auditLog: string; records: () => Record<string, unknown>[] } {
   counter += 1
   const auditLog = join(home, `audit-${counter}.jsonl`)
   const stub = stubContext()
+  for (const [name, value] of Object.entries(services)) stub.services.set(name, value)
   apply(stub.ctx, {
     auditLog,
     redactionKeyFile: join(home, `key-${counter}`),
@@ -755,5 +771,43 @@ describe('the remote-image registration', () => {
 
   it('is absent when the deployment turns it off', () => {
     expect(mount({ remoteImageNeutralization: false }).listeners.has('llm/stream')).toBe(false)
+  })
+})
+
+describe('the telemetry seam disclosure', () => {
+  it('says the redactor is inert when the mounted backend is not sharing', () => {
+    const plugin = mount({}, { sessionTelemetry: { sharing: 'disabled' } })
+
+    expect(plugin.notices.join('\n')).toContain('never runs')
+    expect(plugin.notices.join('\n')).toContain('not a leak')
+  })
+
+  it('says nothing when the backend does dispatch the waterfall', () => {
+    expect(mount({}, { sessionTelemetry: { sharing: 'full' } }).notices).toEqual([])
+  })
+
+  it('waits for a backend that has not mounted yet, then reports once the harness is running', () => {
+    const plugin = mount()
+    const observe = plugin.listeners.get('session/event')?.[0] as
+      (session: Session, event: SessionEvent) => void
+
+    expect(plugin.notices).toEqual([])
+
+    const event = { type: 'user/message', seq: 1, time: 0, data: {} } as unknown as SessionEvent
+    observe({} as Session, event)
+    observe({} as Session, event)
+
+    expect(plugin.notices).toHaveLength(1)
+    expect(plugin.notices[0]).toContain('no session-telemetry backend is mounted')
+  })
+
+  it('is silent about a seam this deployment asked nothing of', () => {
+    const plugin = mount({ telemetryRedaction: false }, { sessionTelemetry: { sharing: 'disabled' } })
+    const observe = plugin.listeners.get('session/event')?.[0] as
+      (session: Session, event: SessionEvent) => void
+
+    observe({} as Session, { type: 'user/message', seq: 1, time: 0, data: {} } as unknown as SessionEvent)
+
+    expect(plugin.notices).toEqual([])
   })
 })

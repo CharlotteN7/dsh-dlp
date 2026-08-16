@@ -186,6 +186,40 @@ What it does not close:
   makes the rewrite impossible or fatal at the source instead of denying a call downstream of
   it. This check is not configurable, for the same reason the rest of the floor is not.
 
+### The telemetry redactor cannot run under the shipped default (finding 008)
+
+A `session-telemetry/record` listener mounts successfully and **silently never runs** under the
+shipped `DSH_TELEMETRY_MODE=DISABLED`, because the coordinator that dispatches the waterfall is
+constructed only in `FULL`/`FEEDBACK_ONLY`. Nothing is exported in that mode, so this is not a
+leak — it is a verification trap: you mount a redactor, see it mount, and have verified nothing.
+
+When `telemetryRedaction` is on, this plugin reads the mounted backend's own `sharing`
+disclosure and reports on `process.stderr` **and** `ctx.logger` when the seam will never
+dispatch:
+
+```
+dsh-dlp: telemetryRedaction is enabled, but the mounted session-telemetry backend reports
+sharing "disabled", so nothing dispatches the session-telemetry/record waterfall and this
+plugin's telemetry redaction never runs. Nothing is exported in this state, so this is not a
+leak — it means the redaction rules are unverified, and they begin running the moment
+telemetry is turned on. Informational only: the plugin's other seams are unaffected.
+```
+
+What it does not close:
+
+- **It is informational and never fatal.** `DISABLED` is the safe default and the right posture
+  for most deployments; the plugin mounts and every other seam runs normally.
+- **It reads a disclosure, not the environment.** `DSH_TELEMETRY_MODE` is only the base
+  bundle's default expression for a `mode` a deployment can also set directly, so guessing at
+  the variable would be wrong. If a backend discloses `full` or `feedback-only` while
+  dispatching nothing, this says nothing.
+- **A backend that mounts after this plugin is answered late.** The check runs at mount if the
+  service is already there and otherwise at the first session event, because absence at mount
+  cannot be told apart from a load order.
+- **The upstream fix is better**: warn at mount when a `session-telemetry/record` hook exists
+  under `DISABLED`, or construct the coordinator unconditionally and drop after the waterfall.
+  Either makes the trap visible for every listener, not only ours.
+
 ---
 
 ## Install

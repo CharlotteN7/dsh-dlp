@@ -17,11 +17,12 @@
  * 5. `llm/stream` — neutralising remote markdown image destinations in
  *    assistant output, before the text becomes a session event.
  *
- * Two of those registrations mitigate defects in the harness rather than in a
- * deployment's own configuration: the missing Content-Security-Policy behind
- * (5), and the mutable execution object behind the guard's mutation check.
- * Both are partial, neither closes its channel, and README.md says so beside
- * the feature.
+ * Three of those registrations mitigate defects in the harness rather than in
+ * a deployment's own configuration: the missing Content-Security-Policy behind
+ * (5), the mutable execution object behind the guard's mutation check, and the
+ * silently inert telemetry seam behind the notice reported at mount. Each one
+ * is partial, none closes its channel, and README.md says so beside the
+ * feature.
  *
  * This plugin is not a containment boundary. It runs in-process at the agent's
  * own uid; anything the agent can execute can read the same files the guard
@@ -42,7 +43,7 @@ import { safeEvaluateGuard } from './guard.ts'
 import { neutralizeImageStream } from './images.ts'
 import { ExecutionSnapshots, mutationReason } from './mutation.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
-import { redactRecord } from './telemetry.ts'
+import { redactRecord, telemetrySeamNotice } from './telemetry.ts'
 import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from './sink.ts'
 
 export { Config } from './policy.ts'
@@ -107,6 +108,17 @@ function report(ctx: Context, message: string): void {
 }
 
 /**
+ * Report something the operator should know that is not a fault, on the same
+ * two channels and for the same reason as {@link report}.
+ * @param ctx - the plugin's context, used for its logger.
+ * @param message - the whole line to report.
+ */
+function notice(ctx: Context, message: string): void {
+  ctx.logger.warn(message)
+  process.stderr.write(`${message}\n`)
+}
+
+/**
  * Load the repo-local policy tier, if the deployment named one.
  *
  * A missing file is no policy at all, and a malformed one is reported and
@@ -164,7 +176,26 @@ export function apply(ctx: Context, config: Config): void {
 
   const snapshots = new ExecutionSnapshots(hasher)
 
+  /**
+   * Report the telemetry seam's state once.
+   *
+   * At mount only a backend that is already there answers the question: the
+   * backend can load after this plugin, and calling that absence "inert" would
+   * be a false alarm. `conclusive` marks the later call, made once the harness
+   * is running sessions, where an absent backend really means no dispatcher.
+   */
+  let telemetrySeamReported = false
+  const discloseTelemetrySeam = (conclusive: boolean): void => {
+    if (telemetrySeamReported) return
+    const backend = ctx.get('sessionTelemetry')
+    if (backend === undefined && !conclusive) return
+    telemetrySeamReported = true
+    const line = telemetrySeamNotice(backend?.sharing)
+    if (line !== undefined) notice(ctx, line)
+  }
+
   ctx.on('session/event', (_session: Session, event: SessionEvent) => {
+    if (policy.telemetryRedaction) discloseTelemetrySeam(true)
     if (event.type === 'tool/call') {
       correlator.note(event.data.callId, { turn: event.data.turn, step: event.data.step })
       return
@@ -282,6 +313,7 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   if (policy.telemetryRedaction) {
+    discloseTelemetrySeam(false)
     ctx.on('session-telemetry/record', (
       _record: SessionTelemetryRecord,
       next: () => SessionTelemetryRecord,
