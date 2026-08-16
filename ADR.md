@@ -327,3 +327,34 @@ convention:
   collected for that memo.
 - the `default` arm of the `RepoPolicyLoad` switch — unreachable while that union stays closed;
   it exists so that adding a variant fails the build.
+
+## 13. Invisible characters are split into a strip half and a report half
+
+Both halves are `medium`, deliberately: the guard floor denies at `high` and above, so an
+invisible character in an argument is never a denial. They are injection *indicators*, not
+credentials, and a denial for one would be a false denial with no leak behind it.
+
+What separates the halves is whether the class has a legitimate use. The Tags block is an
+invisible ASCII alphabet and a bidi override reorders the display without changing what the
+model reads; neither belongs in tool output, so both are replaced. `U+200D` joins emoji
+sequences, `U+200E`/`U+200F` appear in real right-to-left text, and a variation selector picks
+a glyph — replacing those corrupts legitimate content, so they are counted and left alone. The
+count goes into the audit record because a class that is never replaced otherwise leaves no
+trace at all.
+
+A replaced run is spliced **exactly**, which is why `Detection` carries `exact`. Every other
+span is expanded to the nearest delimiter because tier-2 spans under-cover a secret (§4); doing
+that to an invisible character would delete the visible word it hid inside, which is both a
+worse result and a false positive an operator cannot check.
+
+The scan is one pass with a combined character class built from the same table the per-class
+patterns come from, so the two cannot drift. Cost is in README.md, measured rather than
+estimated: clean Latin-1 text is free because every character in the table is above `U+00FF`
+and the regular-expression engine rejects the string on its encoding. A crafted 512 KB result
+of alternating invisible characters costs 56–113 ms, over the per-result budget; it is
+recorded rather than capped, because capping tier 1 would leave a hidden instruction past the
+cap unstripped and unreported.
+
+UTS #39 confusables are not attempted. A homoglyph is a visible, legitimately-encoded
+character, detecting it needs a data table, and it defeats every rule in this package. README
+says so instead of implying coverage.

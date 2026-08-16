@@ -68,6 +68,12 @@ export interface AuditRecord {
   readonly spans?: readonly RedactedSpan[]
   /** Set when the scanned input exceeded the byte cap. */
   readonly truncatedScan?: boolean
+  /**
+   * Runs of each invisible-character class the scanned text carried, by rule
+   * id. Counts only: the characters themselves are content, and a hidden
+   * instruction is exactly the content this file must not repeat.
+   */
+  readonly unicode?: Readonly<Record<string, number>>
   /** Telemetry record channel, for `telemetry-redaction`. */
   readonly channel?: string
 }

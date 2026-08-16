@@ -109,7 +109,15 @@ function expand(text: string, start: number, end: number): { start: number; end:
 /** Detections merged into non-overlapping regions, each attributed to its strictest rule. */
 function mergeSpans(text: string, detections: readonly Detection[]): Omit<RedactedSpan, 'hash'>[] {
   const expanded = detections
-    .map(detection => ({ ...detection, ...expand(text, detection.start, detection.end) }))
+    .map(({ ruleId, ruleVersion, severity, exact, start, end }) => ({
+      ruleId,
+      ruleVersion,
+      severity,
+      // An exact detection covers precisely what must go: widening an
+      // invisible character to its delimiters would delete the visible word
+      // around it.
+      ...exact === true ? { start, end } : expand(text, start, end),
+    }))
     .sort((left, right) => left.start - right.start || left.end - right.end)
   const merged: Omit<RedactedSpan, 'hash'>[] = []
   for (const candidate of expanded) {

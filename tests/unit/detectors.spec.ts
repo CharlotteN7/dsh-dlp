@@ -1,7 +1,16 @@
 /** What each detection tier reports, and what it refuses to report. */
 
 import { describe, expect, it } from 'vitest'
-import { scanAll, scanSync, scanWithSecretlint, SYNC_RULES } from '../../src/detectors.ts'
+import {
+  countUnicodeIndicators,
+  DENY_SEVERITY,
+  scanAll,
+  scanSync,
+  scanUnicode,
+  scanWithSecretlint,
+  severityRank,
+  SYNC_RULES,
+} from '../../src/detectors.ts'
 
 /** Shaped like a Slack bot token; invented for this test, never a live credential. */
 const SLACK = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
@@ -119,5 +128,93 @@ describe('both tiers together', () => {
 
     expect(result.truncated).toBe(true)
     expect(result.detections.map(detection => detection.ruleId)).toContain('dsh-dlp/slack-token')
+  })
+})
+
+describe('invisible and direction-changing characters', () => {
+  /** Tag-block encoding of "hi": the carrier for instructions only the model reads. */
+  const TAGS = '\u{E0068}\u{E0069}'
+  /** Right-to-left override, which reorders what a reader sees but not what a model reads. */
+  const BIDI_OVERRIDE = '\u202E'
+  /** Zero-width joiner, which also joins legitimate emoji sequences. */
+  const ZWJ = '\u200D'
+
+  it('reports a tag-block run as one strippable finding', () => {
+    const findings = scanUnicode(`report${TAGS} ok`)
+
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toMatchObject({
+      ruleId: 'dsh-dlp/unicode-tag-characters',
+      severity: 'medium',
+      action: 'strip',
+      exact: true,
+      start: 'report'.length,
+      end: 'report'.length + TAGS.length,
+    })
+  })
+
+  it('reports a bidi override as strippable and a bidi mark as report-only', () => {
+    const findings = scanUnicode(`a${BIDI_OVERRIDE}b\u200Fc`)
+
+    expect(findings.map(finding => [finding.ruleId, finding.action])).toEqual([
+      ['dsh-dlp/unicode-bidi-override', 'strip'],
+      ['dsh-dlp/unicode-bidi-mark', 'report'],
+    ])
+  })
+
+  it.each([
+    ['a zero-width space', '\u200B', 'dsh-dlp/unicode-zero-width'],
+    ['a zero-width joiner', ZWJ, 'dsh-dlp/unicode-zero-width'],
+    ['a word joiner', '\u2060', 'dsh-dlp/unicode-zero-width'],
+    ['a byte-order mark', '\uFEFF', 'dsh-dlp/unicode-zero-width'],
+    ['an Arabic letter mark', '\u061C', 'dsh-dlp/unicode-bidi-mark'],
+    ['a variation selector', '\uFE0F', 'dsh-dlp/unicode-variation-selector'],
+    ['a supplementary variation selector', '\u{E0100}', 'dsh-dlp/unicode-variation-selector'],
+  ])('reports %s without stripping it', (_label, character, ruleId) => {
+    const findings = scanUnicode(`x${character}y`)
+
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toMatchObject({ ruleId, action: 'report' })
+  })
+
+  it('splits one run into its classes rather than reporting the run', () => {
+    const findings = scanUnicode(`${TAGS}${ZWJ}`)
+
+    expect(findings.map(finding => finding.ruleId)).toEqual([
+      'dsh-dlp/unicode-tag-characters',
+      'dsh-dlp/unicode-zero-width',
+    ])
+    expect(findings[1]?.start).toBe(TAGS.length)
+  })
+
+  it('says nothing about text that carries none', () => {
+    expect(scanUnicode('ordinary text, an em dash — and an emoji 🙂')).toEqual([])
+    expect(countUnicodeIndicators('ordinary text')).toEqual({})
+  })
+
+  it('counts runs per class', () => {
+    expect(countUnicodeIndicators(`${TAGS} a${ZWJ}b ${ZWJ} ${BIDI_OVERRIDE}`)).toEqual({
+      'dsh-dlp/unicode-tag-characters': 1,
+      'dsh-dlp/unicode-zero-width': 2,
+      'dsh-dlp/unicode-bidi-override': 1,
+    })
+  })
+
+  it('reaches the tier-1 seams for the strippable classes only', () => {
+    const detections = scanSync(`a${TAGS}b${BIDI_OVERRIDE}c${ZWJ}d`).detections
+
+    expect(detections.map(detection => detection.ruleId)).toEqual([
+      'dsh-dlp/unicode-tag-characters',
+      'dsh-dlp/unicode-bidi-override',
+    ])
+    expect(detections.every(detection => detection.exact === true)).toBe(true)
+  })
+
+  it('stays below the severity at which the guard floor denies', () => {
+    // An invisible character is an injection indicator, not credential
+    // material: it is redacted and recorded, never turned into a denial.
+    for (const detection of scanSync(`${TAGS}${BIDI_OVERRIDE}`).detections) {
+      expect(severityRank(detection.severity)).toBeLessThan(severityRank(DENY_SEVERITY))
+    }
   })
 })

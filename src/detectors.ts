@@ -54,6 +54,13 @@ export interface Detection {
   readonly start: number
   /** Exclusive end offset into the scanned string. */
   readonly end: number
+  /**
+   * Set when the offsets cover exactly what must be replaced, so redaction
+   * must not widen them to the surrounding delimiters. Only the Unicode
+   * indicators set it: their matches are the characters themselves, while a
+   * secret's reported span is advisory and verified to under-cover (ADR §4).
+   */
+  readonly exact?: true
 }
 
 /** Outcome of one scan. */
@@ -101,10 +108,130 @@ export const SYNC_RULES: readonly SyncRule[] = [
 ] as const
 
 /**
+ * What the scan does with one class of invisible or direction-changing
+ * characters.
+ *
+ * `strip` classes have no legitimate use in tool output, so they are replaced
+ * like any other detection. `report` classes do: `U+200D` joins an emoji
+ * sequence and a variation selector chooses a glyph, so replacing them would
+ * corrupt ordinary text. They are counted and never rewritten.
+ */
+export type UnicodeAction = 'strip' | 'report'
+
+/** One class of invisible or direction-changing characters. */
+export interface UnicodeRule {
+  readonly id: string
+  readonly version: number
+  readonly severity: Severity
+  readonly action: UnicodeAction
+  /** Global, unicode-flagged, matching one run of this class. */
+  readonly pattern: RegExp
+  /** The class's ranges as a character-class body, for the combined run pattern. */
+  readonly ranges: string
+}
+
+/** Build one class's run pattern from its ranges, so the two cannot drift apart. */
+function unicodeRule(
+  id: string,
+  action: UnicodeAction,
+  ranges: string,
+): UnicodeRule {
+  return { id, version: 1, severity: 'medium', action, ranges, pattern: new RegExp(`[${ranges}]+`, 'gu') }
+}
+
+/**
+ * Character classes that hide text from the reader while the model still reads
+ * it, verified against the Unicode character database.
+ *
+ * Every class is `medium`. These are injection *indicators*, not credentials:
+ * the guard floor denies at `high` and above, so an argument carrying one is
+ * never denied on that basis. What they buy is a redaction and an audit record
+ * on a path the harness does not cover — it strips directional controls in
+ * exactly one place, session titles, and never on the tool-result path.
+ *
+ * Not attempted here: UTS #39 confusables. A Cyrillic `а` needs a data table
+ * to detect and is a different cost class, and it defeats every rule in this
+ * file. README.md says so rather than implying coverage.
+ */
+export const UNICODE_RULES: readonly UnicodeRule[] = [
+  // Tags block: a full ASCII alphabet with no rendering, the standard carrier
+  // for instructions meant for the model and not for the reader.
+  unicodeRule('dsh-dlp/unicode-tag-characters', 'strip', String.raw`\u{E0000}-\u{E007F}`),
+  // Bidi overrides and isolates reorder what is displayed without changing the
+  // characters a model reads.
+  unicodeRule('dsh-dlp/unicode-bidi-override', 'strip', String.raw`\u{202A}-\u{202E}\u{2066}-\u{2069}`),
+  // U+200D joins legitimate emoji sequences, so stripping this class has a
+  // real false positive.
+  unicodeRule('dsh-dlp/unicode-zero-width', 'report', String.raw`\u{200B}-\u{200D}\u{2060}\u{FEFF}`),
+  // Bidi marks, unlike the overrides above, appear in real right-to-left text.
+  unicodeRule('dsh-dlp/unicode-bidi-mark', 'report', String.raw`\u{061C}\u{200E}\u{200F}`),
+  unicodeRule('dsh-dlp/unicode-variation-selector', 'report', String.raw`\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}`),
+] as const
+
+/**
+ * One run of any indicator class. The scan is a single pass over the input
+ * with this pattern; the per-class patterns then run over the matched runs
+ * only, which are a handful of characters each.
+ */
+const UNICODE_RUN = new RegExp(`[${UNICODE_RULES.map(rule => rule.ranges).join('')}]+`, 'gu')
+
+/** One indicator match and what the caller should do with it. */
+export interface UnicodeFinding extends Detection {
+  readonly action: UnicodeAction
+}
+
+/**
+ * Find every invisible or direction-changing character in one string.
+ *
+ * Offsets are UTF-16 indices into `text`, so a caller can splice them
+ * directly; they are exact rather than advisory, and {@link Detection.exact}
+ * says so.
+ * @param text - the string to scan.
+ * @returns every indicator run, ordered by start offset.
+ */
+export function scanUnicode(text: string): UnicodeFinding[] {
+  const findings: UnicodeFinding[] = []
+  for (const run of text.matchAll(UNICODE_RUN)) {
+    for (const rule of UNICODE_RULES) {
+      for (const match of run[0].matchAll(rule.pattern)) {
+        const start = run.index + match.index
+        findings.push({
+          ruleId: rule.id,
+          ruleVersion: rule.version,
+          severity: rule.severity,
+          start,
+          end: start + match[0].length,
+          exact: true,
+          action: rule.action,
+        })
+      }
+    }
+  }
+  findings.sort(byPosition)
+  return findings
+}
+
+/**
+ * How many runs of each indicator class one string carries.
+ * @param text - the string to scan.
+ * @returns a count per rule id; absent means none were found.
+ */
+export function countUnicodeIndicators(text: string): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const finding of scanUnicode(text)) {
+    counts[finding.ruleId] = (counts[finding.ruleId] ?? 0) + 1
+  }
+  return counts
+}
+
+/**
  * Scan text with tier 1. Pure, synchronous, no I/O, and never capped: a table
  * of anchored regular expressions costs a linear pass, so there is no reason
  * to stop scanning where tier 2 has to. `truncated` is therefore always
  * `false` here and only tier 2 can set it.
+ *
+ * The `strip` half of {@link UNICODE_RULES} is included, so every seam reading
+ * tier 1 — including the synchronous telemetry waterfall — gets it.
  * @param text - the string to scan.
  * @param rules - the rule table to apply; defaults to {@link SYNC_RULES}.
  * @returns every match, ordered by start offset.
@@ -126,6 +253,9 @@ export function scanSync(
         end: start + match[0].length,
       })
     }
+  }
+  for (const finding of scanUnicode(text)) {
+    if (finding.action === 'strip') detections.push(finding)
   }
   detections.sort(byPosition)
   return { detections, truncated: false }

@@ -284,6 +284,43 @@ describe('the result-redaction registration', () => {
     expect(plugin.records()[0]).toMatchObject({ kind: 'result-redaction', truncatedScan: true, spans: [] })
   })
 
+  it('counts the invisible characters a result carried, and strips only the hidden-instruction classes', async () => {
+    const plugin = mount()
+    const listener = plugin.listeners.get('tools/post-execute')?.[0] as (
+      exec: ToolExecution,
+      result: Readonly<ToolExecutionResult>,
+      next: () => Promise<PostToolDecision>,
+    ) => Promise<PostToolDecision>
+    // Tag-block "hi" beside a zero-width joiner: the first has no legitimate
+    // use in tool output, the second appears in ordinary emoji sequences.
+    const text = 'run\u{E0068}\u{E0069} the\u200D task'
+    const result: ToolExecutionResult = { isError: false, value: { text } as never, content: [] }
+
+    const decision = await listener(execution('read', {}), result, async () => ({ kind: 'accept' }))
+
+    expect(JSON.stringify(decision)).toContain('[REDACTED:dsh-dlp:unicode-tag-characters:')
+    expect(JSON.stringify(decision)).toContain('the\u200D task')
+    expect(plugin.records()[0]).toMatchObject({
+      kind: 'result-redaction',
+      unicode: { 'dsh-dlp/unicode-tag-characters': 1, 'dsh-dlp/unicode-zero-width': 1 },
+    })
+  })
+
+  it('records the count for a result whose only finding is never replaced', async () => {
+    const plugin = mount()
+    const listener = plugin.listeners.get('tools/post-execute')?.[0] as (
+      exec: ToolExecution,
+      result: Readonly<ToolExecutionResult>,
+      next: () => Promise<PostToolDecision>,
+    ) => Promise<PostToolDecision>
+    const result: ToolExecutionResult = { isError: false, value: { text: 'a\u200Bb' } as never, content: [] }
+
+    await listener(execution('read', {}), result, async () => ({ kind: 'accept' }))
+
+    expect(plugin.records()).toHaveLength(1)
+    expect(plugin.records()[0]).toMatchObject({ spans: [], unicode: { 'dsh-dlp/unicode-zero-width': 1 } })
+  })
+
   it('records nothing for a clean result', async () => {
     const plugin = mount()
     const listener = plugin.listeners.get('tools/post-execute')?.[0] as (

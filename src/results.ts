@@ -15,6 +15,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   DENY_SEVERITY,
+  countUnicodeIndicators,
   scanAll,
   scanSync,
   severityRank,
@@ -36,6 +37,8 @@ const RENDER_SEPARATOR = '\n'
 interface PreparedScan {
   readonly scan: (text: string) => readonly Detection[]
   readonly truncated: boolean
+  /** Runs of each invisible-character class in the whole rendering, by rule id. */
+  readonly indicators: Readonly<Record<string, number>>
 }
 
 /**
@@ -56,7 +59,7 @@ interface PreparedScan {
  * is scanned depend on the same accident.
  * @param strings - every string that will be redacted, in render order.
  * @param policy - the effective policy.
- * @returns a memoized lookup and whether tier 2 saw less than the whole rendering.
+ * @returns a memoized lookup, the invisible-character counts, and whether tier 2 saw less than the whole rendering.
  */
 async function prepareScan(strings: readonly string[], policy: ResolvedPolicy): Promise<PreparedScan> {
   const rendered = strings.join(RENDER_SEPARATOR)
@@ -86,7 +89,7 @@ async function prepareScan(strings: readonly string[], policy: ResolvedPolicy): 
     }
   }
   /* v8 ignore next -- every string handed to the walkers was collected for this memo. */
-  return { scan: text => memo.get(text) ?? [], truncated }
+  return { scan: text => memo.get(text) ?? [], truncated, indicators: countUnicodeIndicators(rendered) }
 }
 
 /** Text carried by a content array's text blocks. */
@@ -119,6 +122,13 @@ export interface ResultRedaction {
   readonly decision: PostToolDecision
   readonly spans: readonly RedactedSpan[]
   readonly truncatedScan: boolean
+  /**
+   * Runs of each invisible-character class the result carried, by rule id.
+   * The `strip` classes also appear in `spans`; the `report` classes appear
+   * only here, because rewriting them would corrupt legitimate emoji and
+   * right-to-left text.
+   */
+  readonly indicators: Readonly<Record<string, number>>
 }
 
 /** Feedback for a result this plugin refuses to let through in any arm. */
@@ -179,6 +189,7 @@ export async function redactDecision(
       decision: redacted.changed ? { ...decision, feedback: redacted.content } : decision,
       spans: redacted.spans,
       truncatedScan: prepared.truncated,
+      indicators: prepared.indicators,
     }
   }
 
@@ -208,12 +219,14 @@ export async function redactDecision(
         decision: { kind: 'block', feedback: withheldFeedback(redacted.spans) },
         spans: redacted.spans,
         truncatedScan: prepared.truncated || residual.truncated,
+        indicators: prepared.indicators,
       }
     }
     return {
       decision: { kind: 'accept', value: redacted.value, ...contexts },
       spans: redacted.spans,
       truncatedScan: prepared.truncated,
+      indicators: prepared.indicators,
     }
   }
 
@@ -225,18 +238,20 @@ export async function redactDecision(
       decision: { kind: 'block', feedback: withheldFeedback(spans) },
       spans,
       truncatedScan: prepared.truncated,
+      indicators: prepared.indicators,
     }
   }
 
   const blocks = replacedContent ?? result.content
   const redacted = redactContent(blocks, prepared.scan, hasher)
   if (!redacted.changed) {
-    return { decision, spans: [], truncatedScan: prepared.truncated }
+    return { decision, spans: [], truncatedScan: prepared.truncated, indicators: prepared.indicators }
   }
   return {
     decision: { kind: 'accept', content: redacted.content, ...contexts },
     spans: redacted.spans,
     truncatedScan: prepared.truncated,
+    indicators: prepared.indicators,
   }
 }
 

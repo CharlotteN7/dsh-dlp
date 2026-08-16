@@ -186,10 +186,15 @@ export function apply(ctx: Context, config: Config): void {
       next: () => Promise<PostToolDecision>,
     ) => {
       const redacted = await redactDecision(await next(), result, policy, hasher)
+      const indicators = Object.keys(redacted.indicators).length > 0
+        ? { unicode: redacted.indicators }
+        : {}
       // A truncated scan is recorded even with nothing found: without a record
       // an operator cannot tell "this result was clean" from "this result was
-      // only partly examined".
-      if (redacted.spans.length > 0 || redacted.truncatedScan) {
+      // only partly examined". An invisible-character run is recorded on the
+      // same terms, because the `report` classes are never replaced and the
+      // count is the only trace they leave.
+      if (redacted.spans.length > 0 || redacted.truncatedScan || Object.keys(indicators).length > 0) {
         sink.write({
           v: RECORD_VERSION,
           time: new Date().toISOString(),
@@ -198,6 +203,7 @@ export function apply(ctx: Context, config: Config): void {
           ...identity(exec),
           spans: redacted.spans,
           ...redacted.truncatedScan ? { truncatedScan: true } : {},
+          ...indicators,
         })
       }
       return redacted.decision

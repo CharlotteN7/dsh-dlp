@@ -272,6 +272,51 @@ A tool result is scanned twice: each of its strings on its own by tier 1, and al
 joined by newlines through both tiers. The joined pass finds what no single string reproduces —
 a PEM block arriving as one line per array element, which is exactly the shape `read` produces.
 
+### Invisible characters
+
+Tier 1 also looks for characters that hide text from the person reading a tool result while
+the model still reads it. The harness strips directional controls in exactly one place —
+session titles — and never on the tool-result path.
+
+| Class | Code points | What happens |
+|---|---|---|
+| Tags block | `U+E0000–U+E007F` | replaced |
+| Bidi overrides and isolates | `U+202A–U+202E`, `U+2066–U+2069` | replaced |
+| Zero-width | `U+200B–U+200D`, `U+2060`, `U+FEFF` | counted only |
+| Bidi marks | `U+061C`, `U+200E–U+200F` | counted only |
+| Variation selectors | `U+FE00–U+FE0F`, `U+E0100–U+E01EF` | counted only |
+
+The first two have no legitimate use in tool output — the Tags block is a full invisible ASCII
+alphabet, which is what makes it the standard carrier for a hidden instruction. The last three
+do: `U+200D` joins an emoji sequence and a variation selector picks a glyph, so replacing them
+would corrupt ordinary text. They are counted in the audit record's `unicode` field and left
+alone, as a `medium` finding.
+
+Every class is `medium`, below the severity at which the guard floor denies, so an invisible
+character is never turned into a denial. A replaced run becomes an ordinary placeholder and,
+unlike a secret, is replaced exactly: an invisible character is not widened to its surrounding
+delimiters, so the visible word it hid inside survives.
+
+**A homoglyph defeats all of this**, and every other rule in this plugin. A Cyrillic `а` in
+`аdmin` is a normal, visible, legitimately-encoded character; detecting it means UTS #39
+confusable tables, which is a data set and a different cost class. This plugin does not attempt
+it, and no rule here should be read as covering it.
+
+Measured cost of the invisible-character scan over 512 KB, median of 30 runs on an i9-12900H
+under Node 22.23.2:
+
+| Input | Cost |
+|---|---|
+| clean Latin-1 text | 0.002 ms |
+| one hidden instruction (69 characters) | 0.355 ms |
+| 7,653 separate runs | 7.9 ms |
+| 512 KB of alternating invisible characters (524,286 runs) | 56–113 ms |
+
+Clean text is free because every character in the table is above `U+00FF`: the regular
+expression engine rejects a Latin-1 string on its encoding without scanning it. The last row is
+a crafted input, not a plausible one, and it is the only case that leaves the ≤10 ms per result
+budget; `maxScanBytes` caps tier 2 only, so tier 1 always sees the whole result.
+
 Measured cost of a tier-2 scan: 0.78 ms at 1 KB, 0.91 ms at 16 KB, 2.22 ms at 128 KB, 5.11 ms
 at 512 KB. `maxScanBytes` caps **tier 2 only**, once per result, over the joined rendering;
 tier 1 always scans everything. When tier 2 saw less than the whole result the audit record
@@ -314,6 +359,10 @@ its own identity.
 ```
 
 `kind` is one of `guard-deny`, `pre-execute-deny`, `result-redaction`, `telemetry-redaction`.
+A `result-redaction` record may also carry `unicode`, a count of invisible-character runs per
+class — counts only, because a hidden instruction is exactly the content this file must not
+repeat. A record is written whenever there is something to say, including a result that was
+only counted and a result whose tier-2 scan was truncated.
 A record carries no free-text reason: the spans are the whole description of what matched, so
 nothing built from a candidate path or command line can reach the file. An audit write failure
 is logged and swallowed rather than turned into a denial: the sink is evidence, not

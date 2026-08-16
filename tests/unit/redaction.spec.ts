@@ -181,3 +181,26 @@ describe('collecting nested strings', () => {
     expect(nestedStrings(null)).toEqual([])
   })
 })
+
+describe('an exact detection', () => {
+  /** Tag-block encoding of "hi", carried inside a word. */
+  const TAGS = '\u{E0068}\u{E0069}'
+
+  it('replaces the invisible characters and leaves the word they hid in', () => {
+    const text = `deploy${TAGS}ment notes`
+
+    const redacted = redactText(text, detect(text), hasher)
+
+    expect(redacted.text).toBe('deploy[REDACTED:dsh-dlp:unicode-tag-characters:'
+      + `${hasher.hash(TAGS)}]ment notes`)
+    expect(redacted.spans).toHaveLength(1)
+  })
+
+  it('is described by rule and offsets alone, with no scan bookkeeping', () => {
+    const text = 'x\u202Ey'
+
+    const [span] = redactText(text, detect(text), hasher).spans
+
+    expect(Object.keys(span ?? {}).sort()).toEqual(['end', 'hash', 'ruleId', 'ruleVersion', 'severity', 'start'])
+  })
+})
