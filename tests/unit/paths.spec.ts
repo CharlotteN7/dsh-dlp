@@ -6,12 +6,15 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
   isEgressCapable,
+  isReadOnlyTool,
   matchCredentialPath,
   matchPathArgument,
   normalizeCandidatePath,
   pathArguments,
   pathCandidates,
   resolveCandidatePath,
+  rulesForTool,
+  type CredentialPathRule,
 } from '../../src/paths.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-dlp-paths-'))
@@ -193,5 +196,29 @@ describe('egress capability', () => {
 
   it('accepts an extra egress tool from the repo-local tier', () => {
     expect(isEgressCapable('read', new Set(['read']))).toBe(true)
+  })
+})
+
+describe('which rules one tool is judged against', () => {
+  const always: CredentialPathRule = { id: 'test/always', version: 1, pattern: /always/ }
+  const writes: CredentialPathRule = { id: 'test/writes', version: 1, enforcement: 'writes-only', pattern: /writes/ }
+  const table = [always, writes]
+
+  it.each(['read', 'glob', 'grep', 'lsp', 'session_search', 'job_output'])('treats %s as read-only', (toolName) => {
+    expect(isReadOnlyTool(toolName)).toBe(true)
+    expect(rulesForTool(toolName, table)).toEqual([always])
+  })
+
+  it.each(['write', 'edit', 'bash', 'pwsh', 'run_code', 'mcp__github__create_issue'])(
+    'keeps every rule for %s',
+    (toolName) => {
+      expect(isReadOnlyTool(toolName)).toBe(false)
+      expect(rulesForTool(toolName, table)).toEqual(table)
+    },
+  )
+
+  it('keeps every rule for a tool it has never heard of', () => {
+    // A new tool must be classified before it is trusted with a read.
+    expect(rulesForTool('acme_inspect', table)).toEqual(table)
   })
 })

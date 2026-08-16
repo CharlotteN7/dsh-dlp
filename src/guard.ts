@@ -29,7 +29,7 @@
 
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { DENY_SEVERITY, scanSync, severityRank } from './detectors.ts'
-import { isEgressCapable, matchPathArgument, pathArguments, pathCandidates } from './paths.ts'
+import { isEgressCapable, matchPathArgument, pathArguments, pathCandidates, rulesForTool } from './paths.ts'
 import type { ResolvedPolicy } from './policy.ts'
 import { nestedStrings, type RedactedSpan, type SpanHasher } from './redaction.ts'
 
@@ -72,10 +72,12 @@ function secretArgumentReason(toolName: string, ruleIds: readonly string[], hash
  * Credential paths are denied for every tool, not only readers: a shell that
  * can `cat` a key can also copy it. Only path-typed arguments are tested —
  * running the table over every string matches file content and denies writing
- * a `.gitignore` that mentions `.env`. Argument secrets are denied only for
- * egress-capable tools, because denying a local editor for holding the text it
- * was asked to write would break ordinary work without closing an exfiltration
- * path.
+ * a `.gitignore` that mentions `.env`. The one exception is a `writes-only`
+ * rule, which a tool classified read-only is exempt from; that is how
+ * `$DSH_HOME` stays readable while every write to it is denied. Argument
+ * secrets are denied only for egress-capable tools, because denying a local
+ * editor for holding the text it was asked to write would break ordinary work
+ * without closing an exfiltration path.
  * @param exec - the pending call as the guard stage sees it.
  * @param policy - the effective policy after the tighten-only merge.
  * @param hasher - mints the keyed hashes quoted in a denial reason.
@@ -86,10 +88,11 @@ export function evaluateGuard(
   policy: ResolvedPolicy,
   hasher: SpanHasher,
 ): GuardVerdict | undefined {
+  const rules = rulesForTool(exec.name, policy.credentialPathRules)
   for (const argument of pathArguments(exec.arguments)) {
     const candidates = argument.shell ? pathCandidates(argument.text) : [argument.text]
     for (const candidate of candidates) {
-      const rule = matchPathArgument(candidate, policy.credentialPathRules)
+      const rule = matchPathArgument(candidate, rules)
       if (rule === undefined) continue
       const hash = hasher.hash(candidate)
       return {

@@ -443,6 +443,62 @@ describe('this plugin\'s own files', () => {
   })
 })
 
+describe('the harness home', () => {
+  /** Mount with `$DSH_HOME` pointing at a throwaway directory, then restore it. */
+  function withDshHome<T>(dshHome: string, body: () => T): T {
+    const previous = process.env['DSH_HOME']
+    process.env['DSH_HOME'] = dshHome
+    try {
+      return body()
+    } finally {
+      if (previous === undefined) delete process.env['DSH_HOME']
+      else process.env['DSH_HOME'] = previous
+    }
+  }
+
+  it('lets a read-only tool read the installed plugin tree and the profiles', () => {
+    // The blanket denial made every profile and every installed plugin
+    // unreadable, including by the sibling inspector plugin.
+    const dshHome = join(home, 'dsh-home-read')
+    const plugin = withDshHome(dshHome, mount)
+
+    expect(plugin.guards[0]?.(execution('read', { file_path: join(dshHome, 'profiles/dev/cordis.yml') }))).toBeUndefined()
+    expect(plugin.guards[0]?.(execution('grep', { path: join(dshHome, 'profiles/node_modules/dsh-dlp/lib/index.js') }))).toBeUndefined()
+    expect(plugin.records()).toEqual([])
+  })
+
+  it.each([
+    ['the credential store', '.credentials.yaml'],
+    ['a session log', 'sessions/2026/08/session-1.jsonl'],
+    ['a stray dotenv file', '.env'],
+  ])('denies a read of %s', (_label, relative) => {
+    const dshHome = join(home, 'dsh-home-denied')
+    const plugin = withDshHome(dshHome, mount)
+
+    expect(plugin.guards[0]?.(execution('read', { file_path: join(dshHome, relative) }))).toContain('dsh-dlp denied')
+  })
+
+  it('denies every write under it, whatever the file is', () => {
+    const dshHome = join(home, 'dsh-home-write')
+    const plugin = withDshHome(dshHome, mount)
+
+    expect(plugin.guards[0]?.(execution('write', { file_path: join(dshHome, 'profiles/dev/cordis.yml'), content: '' })))
+      .toContain('dsh-dlp/path-dsh-home')
+    expect(plugin.guards[0]?.(execution('edit', { file_path: join(dshHome, 'profiles/dev/package.json') })))
+      .toContain('dsh-dlp/path-dsh-home')
+    expect(plugin.guards[0]?.(execution('bash', { command: `cat ${join(dshHome, 'profiles/dev/cordis.yml')}` })))
+      .toContain('dsh-dlp/path-dsh-home')
+  })
+
+  it('denies a tool it has never heard of, so a read is a classification and not a default', () => {
+    const dshHome = join(home, 'dsh-home-unknown')
+    const plugin = withDshHome(dshHome, mount)
+
+    expect(plugin.guards[0]?.(execution('acme_inspect', { file_path: join(dshHome, 'profiles/dev/cordis.yml') })))
+      .toContain('dsh-dlp/path-dsh-home')
+  })
+})
+
 describe('the plugin manifest', () => {
   it('declares the services it needs before apply runs', async () => {
     const module = await import('../../src/index.ts')

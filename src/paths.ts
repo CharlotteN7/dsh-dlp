@@ -10,12 +10,26 @@
 import { realpathSync } from 'node:fs'
 import { posix } from 'node:path'
 
+/**
+ * Which calls a credential-path rule is enforced for.
+ *
+ * `every-call` is the default and the only setting a rule protecting
+ * credential *contents* may use. `writes-only` exempts the tools
+ * {@link READ_ONLY_TOOLS} classifies as unable to change anything: it exists
+ * for a directory whose contents are ordinary work to read and dangerous to
+ * modify, which is `$DSH_HOME` — it holds the installed plugin tree and every
+ * profile's `cordis.yml`.
+ */
+export type RuleEnforcement = 'every-call' | 'writes-only'
+
 /** One credential-path pattern. */
 export interface CredentialPathRule {
   readonly id: string
   readonly version: number
   /** Matched against a normalized, forward-slash path. */
   readonly pattern: RegExp
+  /** Defaults to `every-call`; the repo-local tier cannot set it. */
+  readonly enforcement?: RuleEnforcement
 }
 
 /**
@@ -254,4 +268,47 @@ export const LOCAL_TOOLS: ReadonlySet<string> = new Set([
 export function isEgressCapable(toolName: string, extraEgressTools: ReadonlySet<string> = new Set()): boolean {
   if (extraEgressTools.has(toolName)) return true
   return !LOCAL_TOOLS.has(toolName)
+}
+
+/**
+ * Tools that can only look: they query the filesystem, the language server,
+ * the session store or a running job, and have no operation that changes
+ * anything.
+ *
+ * A `writes-only` rule is lifted for these names and for no others. Every
+ * shell, `run_code`, every editor, every `mcp__*` tool and any tool this build
+ * has never heard of stays on the deny side, so a new tool is denied until it
+ * is classified — the same default as {@link LOCAL_TOOLS}, in the same
+ * direction.
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'read', 'read_image', 'glob', 'grep', 'lsp',
+  'session_search', 'session_trace',
+  'session_event_read', 'session_event_search', 'session_event_trace',
+  'list_agents', 'job_list', 'job_output',
+  'terminal_list', 'terminal_read',
+  'get_goal',
+])
+
+/**
+ * Whether a tool is known to be incapable of changing anything.
+ * @param toolName - the executing tool's registered name.
+ * @returns `true` only for a name in {@link READ_ONLY_TOOLS}.
+ */
+export function isReadOnlyTool(toolName: string): boolean {
+  return READ_ONLY_TOOLS.has(toolName)
+}
+
+/**
+ * The credential-path rules one tool is judged against.
+ * @param toolName - the executing tool's registered name.
+ * @param rules - the effective rule table.
+ * @returns every rule, minus the `writes-only` ones for a read-only tool.
+ */
+export function rulesForTool(
+  toolName: string,
+  rules: readonly CredentialPathRule[],
+): readonly CredentialPathRule[] {
+  if (!isReadOnlyTool(toolName)) return rules
+  return rules.filter(rule => rule.enforcement !== 'writes-only')
 }

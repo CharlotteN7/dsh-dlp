@@ -289,22 +289,33 @@ function escapePattern(literal: string): string {
 }
 
 /**
- * Deny rules protecting this plugin's own state.
+ * Deny rules protecting this plugin's own state and the harness home.
  *
  * Every one of these is known at mount: the key file whose bytes make a
  * placeholder hash keyed rather than a bare digest, the append-only sink that
  * is the only evidence a decision happened, and the harness home holding the
  * provider credentials, the session logs and the profiles that decide which
  * plugins load at all.
+ *
+ * The harness home is split. **Writing** anywhere under it is denied for every
+ * tool: a prompt-injected agent editing a profile's `cordis.yml` mounts an
+ * arbitrary plugin. **Reading** it is denied only where the contents are
+ * credentials — `.credentials.yaml`, `.env` and `*.key` are already in the
+ * built-in table, and the session logs get a rule here. Everything else under
+ * that directory is the installed plugin tree and the profile manifests, which
+ * a user debugging a plugin has every reason to read; a blanket read denial
+ * there was unoverridable and was the plugin's most likely uninstall reason.
  * @param config - the deployment-controlled configuration.
  * @param dshHome - the resolved harness home.
  * @returns rules appended after the built-in table.
  */
 function selfProtectionRules(config: Config, dshHome: string): CredentialPathRule[] {
+  const home = escapePattern(resolve(dshHome))
   return [
     { id: 'dsh-dlp/path-own-redaction-key', version: 1, pattern: new RegExp(`^${escapePattern(resolve(config.redactionKeyFile))}$`, 'i') },
     { id: 'dsh-dlp/path-own-audit-log', version: 1, pattern: new RegExp(`^${escapePattern(resolve(config.auditLog))}$`, 'i') },
-    { id: 'dsh-dlp/path-dsh-home', version: 1, pattern: new RegExp(`^${escapePattern(resolve(dshHome))}(/|$)`, 'i') },
+    { id: 'dsh-dlp/path-dsh-sessions', version: 1, pattern: new RegExp(`^${home}/sessions(/|$)`, 'i') },
+    { id: 'dsh-dlp/path-dsh-home', version: 2, enforcement: 'writes-only', pattern: new RegExp(`^${home}(/|$)`, 'i') },
   ]
 }
 

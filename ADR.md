@@ -227,6 +227,21 @@ key file is what makes every placeholder hash keyed, the sink is the only eviden
 happened, and the harness home holds the provider credentials, the session logs, and the
 profiles that decide which plugins load at all.
 
+The harness home is denied by *direction*, not wholesale. Denying reads of the whole directory
+also denied `profiles/node_modules/` — the entire installed plugin tree — and every profile's
+`cordis.yml`, so debugging a plugin, reading a profile, or pointing the sibling
+`dsh-plugin-inspector` at an installed tree hit an unoverridable denial. That is a reason to
+uninstall, and uninstalling removes the whole floor. Writes stay denied everywhere under it,
+because a prompt-injected agent editing a profile mounts an arbitrary plugin; reads are denied
+only for the credential material inside it (`.credentials.yaml`, `sessions/**`, `.env`,
+`*.key`, and our own two files), which the built-in table already covered by filename.
+
+A rule therefore carries an `enforcement` field, and `writes-only` is lifted for a tool named
+in `READ_ONLY_TOOLS` — an allowlist of query-only tools with the same deny-by-default tail as
+`LOCAL_TOOLS`. A shell is not on it: a shell that can `cat` a profile can also rewrite it, and
+deciding which of the two a command line does would mean running it. The repo-local policy tier
+cannot set `enforcement`, so a workspace can add a deny rule but not narrow one.
+
 Argument secrets are the opposite case. Denying `write` because the content it was asked to
 save contains a token would break ordinary work without closing an exfiltration path — the
 bytes are going to local disk either way. So argument denial is scoped to tools that can move

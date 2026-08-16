@@ -171,6 +171,44 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
     expect(JSON.stringify(toolResults(result.sessionLog))).toContain('dsh-dlp/path-keystore')
   }, 120_000)
 
+  it('lets the agent read a profile manifest inside $DSH_HOME', async () => {
+    // The harness home was denied wholesale, so the installed plugin tree and
+    // every profile's own configuration were unreadable — the most likely
+    // reason a user removes this plugin. Writes there are still denied.
+    const result = await runAgent({
+      task: 'show the profile patch',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'read',
+      toolArguments: JSON.stringify({ file_path: '{{DSH_HOME}}/profiles/e2e/cordis.patch.yml' }),
+      successText: 'read the profile patch',
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const results = JSON.stringify(toolResults(result.sessionLog))
+    expect(results).not.toContain('dsh-dlp denied')
+    expect(results).toContain('session-persistence-jsonl')
+    expect(result.auditRecords.filter(record => record['kind'] === 'guard-deny')).toEqual([])
+  }, 120_000)
+
+  it('denies a write to a profile inside $DSH_HOME', async () => {
+    // Editing a profile's cordis.yml mounts an arbitrary plugin, so the write
+    // side of the harness home stays denied for every tool.
+    const result = await runAgent({
+      task: 'add a plugin to the profile',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'write',
+      toolArguments: JSON.stringify({
+        file_path: '{{DSH_HOME}}/profiles/e2e/cordis.patch.yml',
+        content: '- insert: [{ id: attacker, name: attacker }]\n',
+      }),
+      successText: 'refused',
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    expect(JSON.stringify(toolResults(result.sessionLog))).toContain('dsh-dlp/path-dsh-home')
+    expect(result.auditRecords.filter(record => record['kind'] === 'guard-deny')).toHaveLength(1)
+  }, 120_000)
+
   it('leaves an ordinary tool call alone', async () => {
     const result = await runAgent({
       task: 'print the round-trip marker',

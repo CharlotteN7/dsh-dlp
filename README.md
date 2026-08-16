@@ -159,10 +159,24 @@ directories (but not `.env.example`), anything under `.ssh/`,
 documentation extensions are excluded from that last rule, so `src/auth/token.ts` stays
 readable.
 
-Also denied: this plugin's own `redactionKeyFile` and `auditLog`, and everything under
-`$DSH_HOME`. The harness home holds the provider credentials, the session logs, and the
-profiles that decide which plugins load at all; keep the files an agent is meant to work on
-somewhere else.
+Also denied for every tool: this plugin's own `redactionKeyFile` and `auditLog`.
+
+**`$DSH_HOME` is split by direction.** Every *write* under the harness home is denied, for
+every tool: editing a profile's `cordis.yml` mounts an arbitrary plugin, which is the exact
+threat that makes the directory worth protecting. *Reads* are denied only where the contents
+are credentials — `$DSH_HOME/.credentials.yaml`, `$DSH_HOME/sessions/**`, `$DSH_HOME/.env`,
+this plugin's key file and audit log, and any `*.key` — so the installed plugin tree under
+`profiles/node_modules/` and every profile manifest stay readable. A blanket read denial there
+made debugging a plugin, reading a profile, and running the sibling `dsh-plugin-inspector`
+against an installed tree impossible, with a message saying the denial could not be overridden.
+
+Which side of that split a call lands on is decided by the tool's name, from a table of tools
+that can only look: `read`, `read_image`, `glob`, `grep`, `lsp`, the session-query tools,
+`job_list`, `job_output`, `terminal_list`, `terminal_read`, `list_agents`, `get_goal`.
+Every other name — every shell, every editor, every `mcp__*` tool, and any tool this build has
+never heard of — is treated as able to write, so a new tool is denied until it is classified.
+A shell is never on the read side even for a command that only reads: a shell that can `cat` a
+profile can also rewrite it.
 
 Paths are normalised first — `..` traversal, `~`, Windows separators, quoting and a trailing
 slash do not evade the table — and then resolved with `realpathSync`, so a symlink named
