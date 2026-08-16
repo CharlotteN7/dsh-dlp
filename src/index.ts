@@ -24,7 +24,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionTelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
-import { loadRepoPolicy, resolvePolicy, type Config } from './policy.ts'
+import { loadRepoPolicy, resolvePolicy, type Config, type RepoPolicy } from './policy.ts'
 import { SpanHasher } from './redaction.ts'
 import { safeEvaluateGuard } from './guard.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
@@ -72,13 +72,43 @@ export function loadOrCreateKey(path: string): Buffer {
 }
 
 /**
+ * Load the repo-local policy tier, if the deployment named one.
+ *
+ * A missing file is no policy at all, and a malformed one is reported and
+ * ignored. The floor never depends on a workspace file being present or
+ * well-formed: the recommended `policyFile` is workspace-relative, so failing
+ * the mount would refuse to start `dsh` in every repository without one, and
+ * would let a hostile repository disable the plugin by shipping a broken file.
+ * @param ctx - the plugin's context, used only for its logger.
+ * @param policyFile - the configured path, or `undefined` when the deployment named none.
+ * @returns the validated policy, or `undefined` when there is none to apply.
+ */
+function loadConfiguredPolicy(ctx: Context, policyFile: string | undefined): RepoPolicy | undefined {
+  if (policyFile === undefined) return undefined
+  const load = loadRepoPolicy(policyFile)
+  switch (load.kind) {
+    case 'absent':
+      return undefined
+    case 'loaded':
+      return load.policy
+    case 'invalid':
+      ctx.logger.error(`dsh-dlp: ignoring the repo-local policy at ${policyFile}: ${load.problem}`)
+      return undefined
+    /* v8 ignore next 4 -- unreachable while `RepoPolicyLoad` stays closed; the arm exists so adding a variant fails the build. */
+    default: {
+      const unhandled: never = load
+      throw new TypeError(`dsh-dlp: unhandled repo policy load ${JSON.stringify(unhandled)}`)
+    }
+  }
+}
+
+/**
  * Mount the plugin.
  * @param ctx - the plugin's context; every registration is undone on unload.
  * @param config - validated `cordis.yml` configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  const repo = config.policyFile === undefined ? undefined : loadRepoPolicy(config.policyFile)
-  const policy = resolvePolicy(config, repo)
+  const policy = resolvePolicy(config, loadConfiguredPolicy(ctx, config.policyFile))
   const hasher = new SpanHasher(loadOrCreateKey(config.redactionKeyFile))
   const correlator = new CallCorrelator()
   const sink = new AuditSink(config.auditLog, (error) => {
