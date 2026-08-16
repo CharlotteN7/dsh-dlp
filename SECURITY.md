@@ -29,7 +29,7 @@ otherwise.
 
 This plugin is **not a containment boundary**. It runs in-process at the agent's own uid, so
 anything the agent can execute can read the same files the guard denies. The following are
-documented limits, not vulnerabilities — they are described in README.md and PLAN.md §8:
+documented limits, not vulnerabilities — they are described in README.md:
 
 - shell-command obfuscation defeating the `bash` path arm (globbing, quoting, substitution, a
   different binary);

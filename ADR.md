@@ -87,8 +87,7 @@ whitespace replaced the entire record — every other field on the line — for 
 Bounding a secret at the syntax that separates values keeps the surrounding data intact while
 still covering the match.
 
-Residual: a secret containing a delimiter could still be split across two expansions. Recorded
-in PLAN.md §8.
+Residual: a secret containing a delimiter could still be split across two expansions.
 
 ## 5. Arm selection at `tools/post-execute`
 

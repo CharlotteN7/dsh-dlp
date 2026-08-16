@@ -34,6 +34,12 @@ egress firewalling. Use this alongside them, not instead of them.
 
 More limits worth stating up front:
 
+- **Only the guard floor is unconditional.** Every other seam can be neutralised by a listener
+  registered ahead of ours: a `tools/pre-execute` listener that returns without calling `next()`
+  disables the breadth tier, and a `tools/post-execute` listener ahead of ours can replace a
+  result after it was redacted. `ctx.tools.guard()` is order-independent only because it has no
+  allow arm. A `tools/pre-execute` deny also skips guards entirely, so the audit sink cannot
+  claim to have seen every call.
 - **The shell-command arm is advisory pattern-matching.** A `bash` command line is split on
   shell-ish separators and each token is tested as a path. That catches an unobfuscated
   `cat ~/.ssh/id_rsa`. It catches nothing that tries: `cat ~/.netr?` (one glob character),
@@ -71,8 +77,19 @@ More limits worth stating up front:
   is 100% for anything up to 22 characters, which is most of the credential formats worth
   catching. A detector that fires on the long ones the prefix rules already catch and misses
   the rest is not worth the false positives it costs.
-
-The full list is in [PLAN.md §8](PLAN.md).
+- **A secret containing a delimiter can still be split across two redactions.** Every reported
+  span grows outward to the nearest delimiter, which over-redacts in the safe direction, but a
+  secret whose own text contains one of those delimiters is covered by two placeholders with the
+  delimiter left between them.
+- **`additionalContexts` are not scanned.** They are model-visible `UserMessage` payloads and
+  this release does not redact them.
+- **Local writes are out of scope.** A `write` or `edit` into a synced directory moves data off
+  the machine without going through an egress-capable tool.
+- **Telemetry redaction covers a mounted backend's records only.** A second exporter mounted
+  outside the `session-telemetry/record` waterfall is not covered.
+- **`$DSH_HOME` is readable by a read-only tool.** Profile manifests and the installed plugin
+  tree are ordinary work to read, so which plugins a profile loads is model-visible. Only writes
+  are denied wholesale there, plus reads of the credential material inside it.
 
 ---
 
