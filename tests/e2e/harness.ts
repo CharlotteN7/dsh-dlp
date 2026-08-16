@@ -50,11 +50,20 @@ const AUDIT_LOG_NAME = 'dsh-dlp.audit.jsonl'
 const HOME_PLACEHOLDER = '{{DSH_HOME}}'
 
 /**
+ * Placeholder substituted with the throwaway workspace directory.
+ *
+ * Seed files live there rather than under `$DSH_HOME`, because the guard floor
+ * denies the harness home wholesale: it holds the provider credentials, the
+ * session logs, and the profiles that decide which plugins load.
+ */
+const WORKSPACE_PLACEHOLDER = '{{WORKSPACE}}'
+
+/**
  * Harness checkout used to launch the agent. Point `DSH_REPO` at a checkout
  * whose `pnpm run build:lib:host` has run at least once; without those Typert
  * host artifacts profile boot fails with module-resolution errors.
  */
-const DSH_REPO = process.env.DSH_REPO ?? '/path/to/workspace/dsh'
+const DSH_REPO = process.env.DSH_REPO ?? join(PLUGIN_ROOT, '..', 'dsh')
 
 /**
  * Which `dsh` entry the agent boots from. `src` runs `apps/cli/src/bin.ts`
@@ -99,7 +108,7 @@ export interface AgentRunOptions {
   readonly toolArguments?: string
   /** Complete text returned by success-shaped behaviors. */
   readonly successText?: string
-  /** Files written under the throwaway home before boot, keyed by path relative to it. */
+  /** Files written under the throwaway workspace before boot, keyed by path relative to it. */
   readonly seedFiles?: Readonly<Record<string, string>>
   /** Extra rows appended to the profile's own patch layer. */
   readonly extraProfilePatch?: string
@@ -120,6 +129,8 @@ export interface AgentRunResult {
   readonly modelRequests: readonly MockLlmRequestRecord[]
   /** The throwaway `$DSH_HOME` this run used; already deleted when the promise settles. */
   readonly home: string
+  /** The throwaway workspace the seed files were written to; already deleted too. */
+  readonly workspace: string
 }
 
 /** Recursively collect every file under `dir`; missing directories yield nothing. */
@@ -213,13 +224,15 @@ function copyRuntimeDependencies(installDir: string): void {
  */
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
   const home = mkdtempSync(join(tmpdir(), 'dsh-dlp-e2e-'))
+  const workspace = mkdtempSync(join(tmpdir(), 'dsh-dlp-e2e-ws-'))
   const profileDir = join(home, 'profiles', 'e2e')
   const installDir = join(profileDir, 'node_modules', PLUGIN_PACKAGE)
   const sessionsRoot = join(home, 'sessions')
   // The bundle patch defaults the sink to dshHomePath(...), so the throwaway
   // home isolates it without the test overriding the row.
   const auditLog = join(home, AUDIT_LOG_NAME)
-  const substitute = (text: string): string => text.split(HOME_PLACEHOLDER).join(home)
+  const substitute = (text: string): string =>
+    text.split(HOME_PLACEHOLDER).join(home).split(WORKSPACE_PLACEHOLDER).join(workspace)
   let server: MockLlmServer | undefined
 
   try {
@@ -236,7 +249,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     copyRuntimeDependencies(installDir)
 
     for (const [relative, contents] of Object.entries(options.seedFiles ?? {})) {
-      const file = join(home, relative)
+      const file = join(workspace, relative)
       mkdirSync(dirname(file), { recursive: true })
       writeFileSync(file, contents)
     }
@@ -312,9 +325,11 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       sessionLog: logFile === undefined ? [] : readJsonl(logFile),
       modelRequests: [...server.requests],
       home,
+      workspace,
     }
   } finally {
     await server?.close()
     rmSync(home, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true })
   }
 }

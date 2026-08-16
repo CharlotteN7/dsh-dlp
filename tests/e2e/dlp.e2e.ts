@@ -8,8 +8,16 @@
 import { describe, expect, it } from 'vitest'
 import { runAgent } from './harness.ts'
 
-/** A Slack bot token shaped like the real thing; not a live credential. */
+/** A Slack bot token shaped like the real thing; invented here, never a live credential. */
 const SLACK_TOKEN = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
+
+/** A PEM block with an invented body; the header and footer are what the detector matches. */
+const PRIVATE_KEY = [
+  '-----BEGIN RSA PRIVATE KEY-----',
+  'MIIEowIBAAKCAQEAtESTKEYLINEONE0000000000000000000000000000000000',
+  'MIIEowIBAAKCAQEAtESTKEYLINETWO1111111111111111111111111111111111',
+  '-----END RSA PRIVATE KEY-----',
+].join('\n')
 
 /** Rows the agent persisted for completed tool calls. */
 function toolResults(log: readonly Record<string, unknown>[]): Record<string, unknown>[] {
@@ -25,7 +33,7 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
       // carries a spare success.
       sequence: ['tool_call_success', 'success', 'success'],
       toolName: 'read',
-      toolArguments: JSON.stringify({ file_path: '{{DSH_HOME}}/.ssh/id_rsa' }),
+      toolArguments: JSON.stringify({ file_path: '{{WORKSPACE}}/.ssh/id_rsa' }),
       successText: 'I cannot read that file.',
       seedFiles: { '.ssh/id_rsa': `-----BEGIN OPENSSH PRIVATE KEY-----\nDEPLOY_KEY_BODY\n-----END OPENSSH PRIVATE KEY-----\n` },
     })
@@ -59,7 +67,7 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
       task: 'read the service notes',
       sequence: ['tool_call_success', 'success', 'success'],
       toolName: 'read',
-      toolArguments: JSON.stringify({ file_path: '{{DSH_HOME}}/notes.txt' }),
+      toolArguments: JSON.stringify({ file_path: '{{WORKSPACE}}/notes.txt' }),
       successText: 'the notes mention a redacted token',
       // The token lives only in the file, so it can only reach the model
       // through the tool RESULT. Arguments are never rewritten — they are
@@ -88,6 +96,79 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
     expect(spans[0]?.ruleId).toBe('dsh-dlp/slack-token')
     expect(spans[0]?.hash).toMatch(/^[0-9a-f]{12}$/)
     expect(JSON.stringify(result.auditRecords)).not.toContain(SLACK_TOKEN)
+  }, 120_000)
+
+  it('keeps a multi-line secret out of the durable log, not only out of the model request', async () => {
+    // `read` hands the plugin one string per line and a presentationMeta
+    // holding the whole file. A PEM block matches no single line, so the
+    // per-string walk finds nothing; taking the content arm on that basis
+    // showed the model a placeholder while `value` and `meta` — both
+    // persisted by `session.append('tool/result', ...)` — kept the whole key.
+    const result = await runAgent({
+      task: 'read the deploy notes',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'read',
+      toolArguments: JSON.stringify({ file_path: '{{WORKSPACE}}/deploy-notes.txt' }),
+      successText: 'noted',
+      seedFiles: { 'deploy-notes.txt': `deployment notes\n${PRIVATE_KEY}\nend of notes\n` },
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const log = JSON.stringify(toolResults(result.sessionLog))
+    expect(log).not.toContain('MIIEowIBAAKCAQEAtESTKEYLINETWO')
+    expect(log).toContain('[REDACTED:dsh-dlp:private-key-block:')
+    expect(JSON.stringify(result.modelRequests)).not.toContain('MIIEowIBAAKCAQEAtESTKEYLINETWO')
+    expect(JSON.stringify(result.auditRecords)).not.toContain('MIIEowIBAAKCAQEAtESTKEYLINETWO')
+  }, 120_000)
+
+  it('writes an ordinary .gitignore that mentions .env', async () => {
+    // The credential table used to run over every string argument, so file
+    // content naming `.env` was denied with a message saying the denial could
+    // not be overridden.
+    const result = await runAgent({
+      task: 'add a gitignore',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'write',
+      toolArguments: JSON.stringify({
+        file_path: '{{WORKSPACE}}/work/.gitignore',
+        content: 'node_modules/\ndist/\n.env\n',
+      }),
+      successText: 'done',
+      seedFiles: { 'work/keep.txt': 'x\n' },
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const results = JSON.stringify(toolResults(result.sessionLog))
+    expect(results).not.toContain('dsh-dlp denied')
+    expect(result.auditRecords.filter(record => record['kind'] === 'guard-deny')).toEqual([])
+  }, 120_000)
+
+  it('records a denial by rule and keyed hash, never by quoting the argument', async () => {
+    // The denied command names a tenant and a customer database. The whole
+    // argument string used to be interpolated into the reason and the reason
+    // written straight to the sink, so the audit file held both.
+    const result = await runAgent({
+      task: 'show the customer key',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'bash',
+      toolArguments: JSON.stringify({
+        command: 'cat /srv/tenants/acme-corp-prod/customer-db.pem',
+        description: 'show the customer key',
+      }),
+      successText: 'done',
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const denials = result.auditRecords.filter(record => record['kind'] === 'guard-deny')
+    expect(denials).toHaveLength(1)
+    const audit = JSON.stringify(result.auditRecords)
+    expect(audit).not.toContain('acme-corp-prod')
+    expect(audit).not.toContain('customer-db')
+    expect(audit).toContain('dsh-dlp/path-keystore')
+    expect(denials[0]?.['reason']).toBeUndefined()
+
+    // The model still learns which rule stopped it.
+    expect(JSON.stringify(toolResults(result.sessionLog))).toContain('dsh-dlp/path-keystore')
   }, 120_000)
 
   it('leaves an ordinary tool call alone', async () => {
