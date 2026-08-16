@@ -16,6 +16,8 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import z from '@deepseek-ai/schemastery'
 import { SYNC_RULES, severityRank, type Severity, type SyncRule } from './detectors.ts'
@@ -119,6 +121,44 @@ function requireSeverity(node: unknown, what: string): Severity {
   return node as Severity
 }
 
+/**
+ * Longest repo-authored pattern accepted. A credential path is a short,
+ * anchored expression; length past this buys nothing and grows the search
+ * space a catastrophic pattern can backtrack over.
+ */
+const MAX_PATTERN_LENGTH = 200
+
+/**
+ * A quantifier applied to a group that already contains one — `(a+)+`,
+ * `(?:[a-z]*)*`. That shape is what turns a 27-character input into seconds of
+ * backtracking, and the guard runs synchronously on the agent's event loop.
+ *
+ * This is a heuristic, not a decision procedure: no regular-expression syntax
+ * check can prove a pattern runs in linear time, and other shapes
+ * (`(a|a)+`, `a*a*`) still backtrack. It rejects the shape that is both easy
+ * to write and expensive to run; the length cap bounds the rest.
+ */
+const NESTED_QUANTIFIER = /\((?:\?[:=!<]*)?[^()]*[*+?}][^()]*\)\s*[*+{]/
+
+/**
+ * Reject a repo-authored pattern that would let a hostile repository stall the
+ * agent through the synchronous guard.
+ * @param pattern - the pattern text from the policy file.
+ * @param where - the field being validated, for the error message.
+ * @throws PolicyError when the pattern is too long or nests quantifiers.
+ */
+function assertSafePattern(pattern: string, where: string): void {
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new PolicyError(`${where} is ${pattern.length} characters; at most ${MAX_PATTERN_LENGTH} are allowed`)
+  }
+  if (NESTED_QUANTIFIER.test(pattern)) {
+    throw new PolicyError(
+      `${where} nests a quantifier inside a quantified group, which can take exponential time to match;`
+      + ' the guard runs synchronously, so such a pattern is rejected',
+    )
+  }
+}
+
 /** Compile one repo-local credential-path entry, rejecting a pattern that cannot be built. */
 function parseCredentialPathEntry(node: unknown, index: number): CredentialPathRule {
   const entry = requireObject(node, `addCredentialPaths[${index}]`)
@@ -133,6 +173,7 @@ function parseCredentialPathEntry(node: unknown, index: number): CredentialPathR
   if (typeof pattern !== 'string' || pattern.length === 0) {
     throw new PolicyError(`addCredentialPaths[${index}].pattern must be a non-empty string`)
   }
+  assertSafePattern(pattern, `addCredentialPaths[${index}].pattern`)
   try {
     return { id, version: POLICY_VERSION, pattern: new RegExp(pattern, 'i') }
   } catch (error: unknown) {
@@ -206,21 +247,78 @@ export function parseRepoPolicy(text: string): RepoPolicy {
   return { addCredentialPaths, addEgressTools, raiseSeverity, enable: enable as EnableableToggle[] }
 }
 
+/** Outcome of reading the file named by `policyFile`. */
+export type RepoPolicyLoad =
+  /** No file at that path: the workspace ships no policy. */
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'loaded'; readonly policy: RepoPolicy }
+  /** Present but unreadable or invalid; `problem` is what to log. */
+  | { readonly kind: 'invalid'; readonly problem: string }
+
 /**
  * Read a repo-local policy file from disk.
+ *
+ * Absence is not a misconfiguration here, which is the one place this package
+ * departs from "never silently skip a missing referent": `policyFile` names a
+ * path inside the *workspace*, and the recommended value is workspace-relative,
+ * so most repositories will not have one. Failing the mount would refuse to
+ * start `dsh` in every repository lacking the file — and would hand a hostile
+ * repository a way to remove the guard floor by deleting or breaking it.
+ * A malformed file is loud and ignored, never obeyed in part.
  * @param path - the file to read.
- * @returns the validated policy.
- * @throws PolicyError when the file cannot be read or fails validation.
+ * @returns the validated policy, its absence, or the problem to report.
  */
-export function loadRepoPolicy(path: string): RepoPolicy {
+export function loadRepoPolicy(path: string): RepoPolicyLoad {
   let text: string
   try {
     text = readFileSync(path, 'utf8')
   } catch (error: unknown) {
-    // A named referent that does not resolve is a misconfiguration, not "no policy".
-    throw new PolicyError(`cannot read ${path}: ${String(error)}`)
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' }
+    return { kind: 'invalid', problem: `cannot read ${path}: ${String(error)}` }
   }
-  return parseRepoPolicy(text)
+  try {
+    return { kind: 'loaded', policy: parseRepoPolicy(text) }
+  } catch (error: unknown) {
+    return { kind: 'invalid', problem: String(error) }
+  }
+}
+
+/** Escape one literal path so it can anchor a regular expression. */
+function escapePattern(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
+}
+
+/**
+ * Deny rules protecting this plugin's own state.
+ *
+ * Every one of these is known at mount: the key file whose bytes make a
+ * placeholder hash keyed rather than a bare digest, the append-only sink that
+ * is the only evidence a decision happened, and the harness home holding the
+ * provider credentials, the session logs and the profiles that decide which
+ * plugins load at all.
+ * @param config - the deployment-controlled configuration.
+ * @param dshHome - the resolved harness home.
+ * @returns rules appended after the built-in table.
+ */
+function selfProtectionRules(config: Config, dshHome: string): CredentialPathRule[] {
+  return [
+    { id: 'dsh-dlp/path-own-redaction-key', version: 1, pattern: new RegExp(`^${escapePattern(resolve(config.redactionKeyFile))}$`, 'i') },
+    { id: 'dsh-dlp/path-own-audit-log', version: 1, pattern: new RegExp(`^${escapePattern(resolve(config.auditLog))}$`, 'i') },
+    { id: 'dsh-dlp/path-dsh-home', version: 1, pattern: new RegExp(`^${escapePattern(resolve(dshHome))}(/|$)`, 'i') },
+  ]
+}
+
+/**
+ * Resolve the harness home the same way the harness does: `$DSH_HOME` when it
+ * is set to something other than whitespace, otherwise `~/.dsh`. Read here
+ * rather than through `@deepseek-ai/dsh-home-paths` to keep the plugin's
+ * runtime imports to the ones a profile is guaranteed to resolve.
+ * @param env - environment consulted for `DSH_HOME`; defaults to `process.env`.
+ * @returns the absolute harness home.
+ */
+export function resolveDshHome(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env['DSH_HOME']
+  return resolve(configured !== undefined && configured.trim().length > 0 ? configured : join(homedir(), '.dsh'))
 }
 
 /**
@@ -232,7 +330,11 @@ export function loadRepoPolicy(path: string): RepoPolicy {
 export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy {
   const enabled = (toggle: EnableableToggle): boolean => config[toggle] || (repo?.enable.includes(toggle) ?? false)
   return {
-    credentialPathRules: [...CREDENTIAL_PATH_RULES, ...repo?.addCredentialPaths ?? []],
+    credentialPathRules: [
+      ...CREDENTIAL_PATH_RULES,
+      ...selfProtectionRules(config, resolveDshHome()),
+      ...repo?.addCredentialPaths ?? [],
+    ],
     extraEgressTools: new Set(repo?.addEgressTools ?? []),
     syncRules: SYNC_RULES.map((rule) => {
       const raised = repo?.raiseSeverity.get(rule.id)

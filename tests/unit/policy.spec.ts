@@ -8,7 +8,14 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { loadRepoPolicy, parseRepoPolicy, PolicyError, resolvePolicy, type Config } from '../../src/policy.ts'
+import {
+  loadRepoPolicy,
+  parseRepoPolicy,
+  PolicyError,
+  resolveDshHome,
+  resolvePolicy,
+  type Config,
+} from '../../src/policy.ts'
 import { SYNC_RULES } from '../../src/detectors.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-dlp-policy-'))
@@ -131,16 +138,58 @@ describe('a malformed repo-local policy', () => {
   })
 })
 
+describe('a repo-local policy that would stall the agent', () => {
+  it('is rejected for nesting a quantifier inside a quantified group', () => {
+    // `^(a+)+$` against 27 characters blocks the synchronous guard for
+    // seconds, which is a denial-of-service any workspace could ship.
+    expect(() => parseRepoPolicy("v: 1\naddCredentialPaths:\n  - id: acme/evil\n    pattern: '^(a+)+$'\n"))
+      .toThrow(/exponential time/)
+  })
+
+  it('is rejected for a pattern longer than a credential path needs', () => {
+    const pattern = `(^|/)${'a'.repeat(220)}$`
+
+    expect(() => parseRepoPolicy(`v: 1\naddCredentialPaths:\n  - id: acme/long\n    pattern: '${pattern}'\n`))
+      .toThrow(/at most 200 are allowed/)
+  })
+
+  it('still accepts an ordinary anchored path pattern', () => {
+    const policy = parseRepoPolicy("v: 1\naddCredentialPaths:\n  - id: acme/x\n    pattern: '(^|/)acme-deploy\\.dat$'\n")
+
+    expect(policy.addCredentialPaths[0]?.pattern.test('/srv/acme-deploy.dat')).toBe(true)
+  })
+})
+
 describe('loading from disk', () => {
   it('reads and validates a file', () => {
     const file = join(home, 'ok.yml')
     writeFileSync(file, 'v: 1\naddEgressTools: [acme_publish]\n')
 
-    expect(loadRepoPolicy(file).addEgressTools).toEqual(['acme_publish'])
+    const load = loadRepoPolicy(file)
+
+    expect(load).toMatchObject({ kind: 'loaded' })
+    expect(load.kind === 'loaded' && load.policy.addEgressTools).toEqual(['acme_publish'])
   })
 
-  it('fails loud when the named file does not resolve', () => {
-    expect(() => loadRepoPolicy(join(home, 'absent.yml'))).toThrow(/cannot read/)
+  it('reports absence rather than failing, because most workspaces ship no policy', () => {
+    expect(loadRepoPolicy(join(home, 'absent.yml'))).toEqual({ kind: 'absent' })
+  })
+
+  it('reports a malformed file rather than obeying part of it', () => {
+    const file = join(home, 'broken.yml')
+    writeFileSync(file, 'v: 1\nunknownKey: [oops]\n')
+
+    const load = loadRepoPolicy(file)
+
+    expect(load.kind).toBe('invalid')
+    expect(load.kind === 'invalid' && load.problem).toContain('unknown keys')
+  })
+
+  it('reports a path it cannot read for a reason other than absence', () => {
+    const load = loadRepoPolicy(home)
+
+    expect(load.kind).toBe('invalid')
+    expect(load.kind === 'invalid' && load.problem).toContain('cannot read')
   })
 })
 
@@ -154,11 +203,31 @@ describe('the merged policy', () => {
   })
 
   it('appends repo-local deny patterns after the built-in table', () => {
-    const repo = parseRepoPolicy("v: 1\naddCredentialPaths:\n  - id: acme/x\n    pattern: 'secret$'\n")
+    const repo = parseRepoPolicy("v: 1\naddCredentialPaths:\n  - id: acme/x\n    pattern: 'acme-deploy\\.dat$'\n")
     const resolved = resolvePolicy(baseConfig, repo)
 
     expect(resolved.credentialPathRules.at(-1)?.id).toBe('acme/x')
     expect(resolved.credentialPathRules.length).toBeGreaterThan(1)
+  })
+
+  it('defends this plugin\'s own key, its sink, and the harness home', () => {
+    const resolved = resolvePolicy({
+      ...baseConfig,
+      auditLog: '/var/log/dsh-dlp.jsonl',
+      redactionKeyFile: '/var/lib/dsh-dlp.redaction-key',
+    })
+    const rules = (candidate: string): string | undefined =>
+      resolved.credentialPathRules.find(rule => rule.pattern.test(candidate))?.id
+
+    expect(rules('/var/lib/dsh-dlp.redaction-key')).toBe('dsh-dlp/path-own-redaction-key')
+    expect(rules('/var/log/dsh-dlp.jsonl')).toBe('dsh-dlp/path-own-audit-log')
+    expect(rules(join(resolveDshHome(), 'profiles', 'default', 'package.json'))).toBe('dsh-dlp/path-dsh-home')
+    expect(rules(resolveDshHome())).toBe('dsh-dlp/path-dsh-home')
+  })
+
+  it('follows $DSH_HOME when the deployment sets one', () => {
+    expect(resolveDshHome({ DSH_HOME: '/srv/harness-home' })).toBe('/srv/harness-home')
+    expect(resolveDshHome({ DSH_HOME: '   ' })).toBe(resolveDshHome({}))
   })
 
   it('lets a repo-local policy switch a pass on but never off', () => {
