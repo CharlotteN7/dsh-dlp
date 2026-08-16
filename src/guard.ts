@@ -1,6 +1,13 @@
 /**
  * The guard floor: the one part of this plugin that holds under attack.
  *
+ * It tests the path-typed arguments of a call — never file content — against
+ * the credential table, resolving symlinks first, and the whole argument set
+ * against the tier-1 detectors when the tool can move data off the machine.
+ * The `command` arm inside that is advisory pattern-matching: tokenising a
+ * shell command line catches `cat ~/.ssh/id_rsa` and loses to one glob
+ * character. README.md says so plainly and so does this comment.
+ *
  * `ctx.tools.guard()` takes a synchronous `(exec) => string | undefined`. It
  * has no allow arm, so no registration order can turn a denial back into
  * permission, and the first denial wins. It runs after the whole
@@ -22,7 +29,7 @@
 
 import type { ToolExecution } from '@deepseek-ai/dsh-tools'
 import { DENY_SEVERITY, scanSync, severityRank } from './detectors.ts'
-import { isEgressCapable, matchCredentialPath, pathCandidates } from './paths.ts'
+import { isEgressCapable, matchPathArgument, pathArguments, pathCandidates } from './paths.ts'
 import type { ResolvedPolicy } from './policy.ts'
 import { nestedStrings, type RedactedSpan, type SpanHasher } from './redaction.ts'
 
@@ -35,11 +42,19 @@ export interface GuardVerdict {
   readonly spans: readonly RedactedSpan[]
 }
 
-/** Denial text for a credential-path match. */
-function credentialPathReason(toolName: string, ruleId: string, candidate: string): string {
-  return `dsh-dlp denied ${JSON.stringify(toolName)}: ${JSON.stringify(candidate)} is credential material `
-    + `(rule ${ruleId}). Reading or passing credential files through a tool is blocked by policy and cannot be `
-    + 'overridden. Ask the user to supply the value you need, or use a path that is not a credential store.'
+/**
+ * Denial text for a credential-path match.
+ *
+ * The matched path is named by rule id and keyed hash, never quoted. A path is
+ * itself sensitive — a tenant name, a customer directory, a shell command that
+ * happens to end in `.pem` — and this string is both model-visible and written
+ * to the audit sink.
+ */
+function credentialPathReason(toolName: string, ruleId: string, hash: string): string {
+  return `dsh-dlp denied ${JSON.stringify(toolName)}: one of its path arguments is credential material `
+    + `(rule ${ruleId}, keyed hash ${hash}). Reading or passing credential files through a tool is blocked by `
+    + 'policy and cannot be overridden. Ask the user to supply the value you need, or use a path that is not a '
+    + 'credential store.'
 }
 
 /** Denial text for secrets found in arguments heading to an egress-capable tool. */
@@ -55,7 +70,9 @@ function secretArgumentReason(toolName: string, ruleIds: readonly string[], hash
  * Decide whether the floor denies one call.
  *
  * Credential paths are denied for every tool, not only readers: a shell that
- * can `cat` a key can also copy it. Argument secrets are denied only for
+ * can `cat` a key can also copy it. Only path-typed arguments are tested —
+ * running the table over every string matches file content and denies writing
+ * a `.gitignore` that mentions `.env`. Argument secrets are denied only for
  * egress-capable tools, because denying a local editor for holding the text it
  * was asked to write would break ordinary work without closing an exfiltration
  * path.
@@ -69,22 +86,22 @@ export function evaluateGuard(
   policy: ResolvedPolicy,
   hasher: SpanHasher,
 ): GuardVerdict | undefined {
-  const strings = nestedStrings(exec.arguments)
-
-  for (const text of strings) {
-    for (const candidate of pathCandidates(text)) {
-      const rule = matchCredentialPath(candidate, policy.credentialPathRules)
+  for (const argument of pathArguments(exec.arguments)) {
+    const candidates = argument.shell ? pathCandidates(argument.text) : [argument.text]
+    for (const candidate of candidates) {
+      const rule = matchPathArgument(candidate, policy.credentialPathRules)
       if (rule === undefined) continue
+      const hash = hasher.hash(candidate)
       return {
         kind: 'credential-path',
-        reason: credentialPathReason(exec.name, rule.id, candidate),
+        reason: credentialPathReason(exec.name, rule.id, hash),
         spans: [{
           ruleId: rule.id,
           ruleVersion: rule.version,
           severity: 'critical',
           start: 0,
           end: candidate.length,
-          hash: hasher.hash(candidate),
+          hash,
         }],
       }
     }
@@ -93,8 +110,8 @@ export function evaluateGuard(
   if (!isEgressCapable(exec.name, policy.extraEgressTools)) return undefined
 
   const spans: RedactedSpan[] = []
-  for (const text of strings) {
-    for (const detection of scanSync(text, policy.syncRules, policy.maxScanBytes).detections) {
+  for (const text of nestedStrings(exec.arguments)) {
+    for (const detection of scanSync(text, policy.syncRules).detections) {
       if (severityRank(detection.severity) < severityRank(DENY_SEVERITY)) continue
       spans.push({ ...detection, hash: hasher.hash(text.slice(detection.start, detection.end)) })
     }

@@ -7,6 +7,7 @@
  * @module dsh-dlp/paths
  */
 
+import { realpathSync } from 'node:fs'
 import { posix } from 'node:path'
 
 /** One credential-path pattern. */
@@ -18,8 +19,20 @@ export interface CredentialPathRule {
 }
 
 /**
+ * File extensions that name source code or documentation rather than a
+ * credential store, used by {@link CREDENTIAL_PATH_RULES}'s filename
+ * heuristic. Without them `src/auth/token.ts` would be undeniable-file
+ * material and ordinary work would stop.
+ */
+const CODE_EXTENSIONS = 'ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|c|h|hpp|cc|cpp|cs|swift|kt|md|rst|txt|html|css|scss|sh|bash|zsh|sql|lock|snap|map'
+
+/**
  * Paths whose contents are credentials. Reading any of them through a tool is
  * denied unconditionally.
+ *
+ * Order matters only for reporting: the first match wins, so the specific
+ * rules precede the filename heuristic and an operator sees the precise rule
+ * id in the audit record.
  *
  * `$DSH_HOME/.credentials.yaml` is here because core permits it: the harness
  * has no file-read restriction in any mode ("Reads pass through untouched:
@@ -27,36 +40,50 @@ export interface CredentialPathRule {
  * authenticates with is agent-readable. That is the gap this table closes.
  */
 export const CREDENTIAL_PATH_RULES: readonly CredentialPathRule[] = [
-  { id: 'dsh-dlp/path-dotenv', version: 1, pattern: /(^|\/)\.env(\.(?!example$|sample$|template$|dist$)[^/]*)?$/i },
-  { id: 'dsh-dlp/path-ssh-dir', version: 1, pattern: /(^|\/)\.ssh(\/|$)/i },
-  { id: 'dsh-dlp/path-ssh-key', version: 1, pattern: /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/i },
-  { id: 'dsh-dlp/path-aws', version: 1, pattern: /(^|\/)\.aws\/(credentials|config)$/i },
+  { id: 'dsh-dlp/path-dotenv', version: 2, pattern: /(^|\/)\.env(\.(?!(?:example|sample|template|dist)(?:\/|$))[^/]*)?(\/|$)/i },
+  { id: 'dsh-dlp/path-ssh-dir', version: 2, pattern: /(^|\/)\.ssh[^/]*(\/|$)/i },
+  { id: 'dsh-dlp/path-ssh-key', version: 2, pattern: /(^|\/)id_(rsa|dsa|ecdsa|ed25519)([._-][^/]*)?$/i },
+  { id: 'dsh-dlp/path-aws', version: 2, pattern: /(^|\/)\.aws(\/|$)/i },
+  { id: 'dsh-dlp/path-azure', version: 1, pattern: /(^|\/)\.azure(\/|$)/i },
   { id: 'dsh-dlp/path-dsh-credentials', version: 1, pattern: /(^|\/)\.credentials\.yaml$/i },
   { id: 'dsh-dlp/path-netrc', version: 1, pattern: /(^|\/)\.netrc$/i },
   { id: 'dsh-dlp/path-npmrc', version: 1, pattern: /(^|\/)\.npmrc$/i },
   { id: 'dsh-dlp/path-pypirc', version: 1, pattern: /(^|\/)\.pypirc$/i },
-  { id: 'dsh-dlp/path-kubeconfig', version: 1, pattern: /(^|\/)\.kube\/config$/i },
-  { id: 'dsh-dlp/path-docker-config', version: 1, pattern: /(^|\/)\.docker\/config\.json$/i },
+  { id: 'dsh-dlp/path-git-credentials', version: 1, pattern: /(^|\/)\.git-credentials$/i },
+  { id: 'dsh-dlp/path-gh-config', version: 1, pattern: /(^|\/)\.config\/gh(\/|$)/i },
+  { id: 'dsh-dlp/path-kubeconfig', version: 2, pattern: /(^|\/)(\.kube\/[^/]*|kubeconfig[^/]*)$/i },
+  { id: 'dsh-dlp/path-kubernetes-conf', version: 1, pattern: /(^|\/)kubernetes\/[^/]*\.conf$/i },
+  { id: 'dsh-dlp/path-docker-config', version: 2, pattern: /(^|\/)(\.docker\/config\.json|\.dockercfg)$/i },
   { id: 'dsh-dlp/path-gcloud-credentials', version: 1, pattern: /(^|\/)\.config\/gcloud\/[^/]*credential[^/]*$/i },
-  { id: 'dsh-dlp/path-keystore', version: 1, pattern: /\.(pem|p12|pfx|jks|keystore)$/i },
+  { id: 'dsh-dlp/path-rclone-config', version: 1, pattern: /(^|\/)rclone\.conf$/i },
+  { id: 'dsh-dlp/path-pgpass', version: 1, pattern: /(^|\/)\.pgpass$/i },
+  { id: 'dsh-dlp/path-mysql-config', version: 1, pattern: /(^|\/)\.my\.cnf$/i },
+  { id: 'dsh-dlp/path-service-account', version: 1, pattern: /(^|\/)[^/]*service[._-]?account[^/]*\.json$/i },
+  { id: 'dsh-dlp/path-keystore', version: 2, pattern: /\.(pem|p12|pfx|jks|keystore|key|asc|gpg)$/i },
+  { id: 'dsh-dlp/path-credential-name', version: 1, pattern: new RegExp(String.raw`(^|\/)(?!.*\.(?:${CODE_EXTENSIONS})$)[^/]*(credentials?|secrets?|tokens?)([._-][^/]*)?$`, 'i') },
 ] as const
 
 /**
  * Normalize one candidate path for matching: Windows separators become
- * forward slashes, `~` expands to a root-anchored marker, and `..` segments
- * collapse so a traversal cannot hide a credential path from the table.
+ * forward slashes, surrounding quotes come off, `~` expands to a
+ * root-anchored marker, `..` segments collapse so a traversal cannot hide a
+ * credential path from the table, and a trailing slash is dropped so `.env/`
+ * matches the same rule as `.env`.
  * @param candidate - a raw string from tool arguments.
  * @returns the normalized form the rules are matched against.
  */
 export function normalizeCandidatePath(candidate: string): string {
   const slashed = candidate.replace(/\\/g, '/')
-  const homeExpanded = slashed.startsWith('~/') ? `/~/${slashed.slice(2)}` : slashed
-  const stripped = homeExpanded.replace(/^["']|["']$/g, '')
-  return posix.normalize(stripped)
+  const stripped = slashed.replace(/^["']|["']$/g, '')
+  const homeExpanded = stripped.startsWith('~/') ? `/~/${stripped.slice(2)}` : stripped
+  const normalized = posix.normalize(homeExpanded)
+  return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized
 }
 
 /**
- * Whether one string names credential material.
+ * Whether one string names credential material. Pure: it never touches the
+ * filesystem, so a symlink is matched by the name it was given. The guard
+ * calls {@link matchPathArgument} instead, which resolves first.
  * @param candidate - a raw string from tool arguments.
  * @param rules - the rule table; defaults to {@link CREDENTIAL_PATH_RULES}.
  * @returns the first matching rule, or `undefined`.
@@ -70,16 +97,132 @@ export function matchCredentialPath(
 }
 
 /**
- * Split one argument string into the substrings worth testing as paths: the
- * whole string, plus each shell-ish token. A `bash` command is a single
- * string argument, so without tokenization `cat ~/.ssh/id_rsa && echo ok`
- * would not match a rule anchored at the end of a path.
- * @param text - one string value taken from tool arguments.
+ * Resolve one candidate through the filesystem so a symlink cannot rename a
+ * credential file out of the table.
+ * @param candidate - a raw string from tool arguments.
+ * @returns the canonical path, or `undefined` when it does not resolve.
+ */
+export function resolveCandidatePath(candidate: string): string | undefined {
+  try {
+    return realpathSync(normalizeCandidatePath(candidate))
+  } catch {
+    // ENOENT for a path being created, ELOOP for a broken link, EACCES for an
+    // unreadable parent: in every case the literal spelling is all we have.
+    return undefined
+  }
+}
+
+/**
+ * Match one path-typed argument against the credential table, by the name the
+ * caller used and by what that name resolves to.
+ * @param candidate - a raw string from a path-typed tool argument.
+ * @param rules - the rule table; defaults to {@link CREDENTIAL_PATH_RULES}.
+ * @returns the first matching rule, or `undefined`.
+ */
+export function matchPathArgument(
+  candidate: string,
+  rules: readonly CredentialPathRule[] = CREDENTIAL_PATH_RULES,
+): CredentialPathRule | undefined {
+  const literal = matchCredentialPath(candidate, rules)
+  if (literal !== undefined) return literal
+  const resolved = resolveCandidatePath(candidate)
+  return resolved === undefined ? undefined : matchCredentialPath(resolved, rules)
+}
+
+/**
+ * Split one shell command into the substrings worth testing as paths: the
+ * whole string, plus each shell-ish token. A `bash` command is a single string
+ * argument, so without tokenization `cat ~/.ssh/id_rsa && echo ok` would not
+ * match a rule anchored at the end of a path.
+ *
+ * This is advisory only. A shell command is a program, not a path, and any
+ * quoting, globbing, substitution or encoding defeats the split — see the
+ * "what this is not" section of README.md.
+ * @param text - one shell command line taken from tool arguments.
  * @returns the whole string followed by its tokens.
  */
 export function pathCandidates(text: string): string[] {
   const tokens = text.split(/[\s;|&<>()"'`,]+/).filter(token => token.length > 0)
   return [text, ...tokens]
+}
+
+/**
+ * Argument keys whose values name filesystem paths.
+ *
+ * The guard tests these and nothing else. Running the credential-path table
+ * over every string argument matches file *content* — a `.gitignore` listing
+ * `.env`, an edit that mentions `id_rsa`, a grep pattern — and denies ordinary
+ * work with a message saying it cannot be overridden.
+ */
+export const PATH_ARGUMENT_KEYS: ReadonlySet<string> = new Set([
+  // Names the shipped tools use: `file_path` (read, write, edit), `path` and
+  // `paths` (search, lsp, terminal), `cwd` and `workdir` (the shells), `root`.
+  'file_path', 'filePath', 'path', 'paths', 'file', 'files', 'filename', 'file_name',
+  'notebook_path', 'notebookPath', 'target_file', 'source_path', 'destination_path',
+  'source', 'destination', 'directory', 'dir', 'cwd', 'workdir', 'root',
+  'output_path', 'input_path',
+])
+
+/**
+ * Argument keys whose values are shell command lines. Their tokens are tested
+ * as paths; see {@link pathCandidates} for why that is advisory.
+ */
+export const SHELL_ARGUMENT_KEYS: ReadonlySet<string> = new Set(['command', 'cmd', 'script', 'shell_command'])
+
+/** One string worth testing as a path, and how to split it. */
+export interface PathArgument {
+  readonly text: string
+  /** Whether the string is a shell command line rather than a single path. */
+  readonly shell: boolean
+}
+
+/**
+ * Collect the path-typed strings inside one tool's arguments, at any depth.
+ *
+ * A key names paths for every tool that uses it: the tool registry is open, so
+ * a per-tool table would abstain on every plugin and MCP tool this build has
+ * never heard of.
+ * @param args - the pending call's parsed arguments.
+ * @returns each path-typed string, labelled with whether it is a command line.
+ */
+export function pathArguments(args: unknown): PathArgument[] {
+  const found: PathArgument[] = []
+
+  const collect = (node: unknown, shell: boolean): void => {
+    if (typeof node === 'string') {
+      found.push({ text: node, shell })
+      return
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) collect(item, shell)
+      return
+    }
+    if (typeof node === 'object' && node !== null) {
+      for (const item of Object.values(node)) collect(item, shell)
+    }
+  }
+
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item)
+      return
+    }
+    if (typeof node !== 'object' || node === null) return
+    for (const [key, value] of Object.entries(node)) {
+      if (PATH_ARGUMENT_KEYS.has(key)) {
+        collect(value, false)
+        continue
+      }
+      if (SHELL_ARGUMENT_KEYS.has(key)) {
+        collect(value, true)
+        continue
+      }
+      walk(value)
+    }
+  }
+
+  walk(args)
+  return found
 }
 
 /**
