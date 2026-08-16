@@ -24,7 +24,6 @@
   "engines": {
     "node": "^22.19.0 || >=24"
   },
-  "private": true,
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

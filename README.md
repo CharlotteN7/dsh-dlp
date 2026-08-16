@@ -56,12 +56,32 @@ The full list is in [PLAN.md §8](PLAN.md).
 
 ## Install
 
+A profile carrying only `@deepseek-ai/dsh-base` has no agent loop. Add a runnable
+bundle alongside it, or the profile boots with nothing for this plugin to guard:
+
 ```sh
+dsh plugin --profile <name> add @deepseek-ai/dsh-headless@0.1.0-rc.6
 dsh plugin --profile <name> add dsh-dlp
+dsh --profile <name> --dump-config      # the dsh-dlp row should appear
 ```
+
+Pin `@deepseek-ai/dsh-headless` explicitly: its npm `latest` tag still points at
+`0.0.1-rc.1`, so an unpinned install silently resolves to a much older harness.
 
 The package ships a `cordis.patch.yml` bundle layer, so listing it in a profile's
 `dsh.profile.bundles` is enough to mount it with working defaults.
+
+**Install from the registry or a packed tarball, not from a git spec.**
+`dsh plugin add github:CharlotteN7/dsh-dlp` resolves and writes the dependency,
+but `lib/` is a build output that git does not carry and no `prepare` script
+rebuilds it, so the row mounts and then fails to load. To install from a
+checkout, build first and add the tarball:
+
+```sh
+git clone https://github.com/CharlotteN7/dsh-dlp && cd dsh-dlp
+pnpm install && pnpm run build && pnpm pack
+dsh plugin --profile <name> add ./dsh-dlp-0.1.0.tgz
+```
 
 ## Configure
 
