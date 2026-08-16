@@ -430,6 +430,48 @@ describe('the repo-local policy tier', () => {
   })
 })
 
+describe('a fault the operator has to see', () => {
+  /** Collect what the plugin writes to `process.stderr` while `body` runs. */
+  function capturedStderr(body: () => void): string {
+    const written: string[] = []
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+      written.push(String(chunk))
+      return true
+    })
+    try {
+      body()
+    } finally {
+      spy.mockRestore()
+    }
+    return written.join('')
+  }
+
+  it('reaches stderr as well as the logger when the audit sink cannot be written', () => {
+    // `ctx.logger`'s default exporter is an in-memory ring buffer and no
+    // shipped bundle mounts a console exporter, so the logger alone is
+    // invisible on a stock install.
+    let plugin: ReturnType<typeof mount> | undefined
+    const stderr = capturedStderr(() => {
+      plugin = mount({ auditLog: join(home, 'no-such-directory', 'audit.jsonl') })
+      plugin.guards[0]?.(execution('read', { file_path: '/srv/.env' }))
+    })
+
+    expect(stderr).toContain('dsh-dlp: audit sink write failed')
+    expect(plugin?.errors[0]).toContain('audit sink write failed')
+  })
+
+  it('reaches stderr as well as the logger when the repo-local policy is invalid', () => {
+    const policyFile = join(home, 'stderr-policy.yml')
+    writeFileSync(policyFile, 'v: 1\nunknownKey: [oops]\n')
+    let plugin: ReturnType<typeof mount> | undefined
+
+    const stderr = capturedStderr(() => { plugin = mount({ policyFile }) })
+
+    expect(stderr).toContain('ignoring the repo-local policy')
+    expect(plugin?.errors[0]).toContain('ignoring the repo-local policy')
+  })
+})
+
 describe('what the audit sink is allowed to hold', () => {
   it('records rule identity and a keyed hash, never the argument that matched', () => {
     const plugin = mount()

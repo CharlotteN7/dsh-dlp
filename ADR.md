@@ -195,10 +195,16 @@ the audit file; for `read` it wrote the tenant and customer names in the path. A
 sensitive on its own. The spans — rule id, rule version, severity, offsets, keyed hash — are
 the whole description of what matched, in the record and in the reason handed to the model.
 
-**A sink write failure is logged and swallowed.** Turning it into a denial would trade a
+**A sink write failure is reported and swallowed.** Turning it into a denial would trade a
 confidentiality control for an availability outage — a full disk would make every tool call
 fail — and a throwing guard would also skip `tools/post-execute` and disable redaction. The
 verdict never depends on whether the record was written.
+
+Reported means `ctx.logger` **and** `process.stderr`. `ctx.logger`'s default exporter is an
+in-memory 1000-entry ring buffer (`vendor/cordis/src/logger.ts`) and no shipped bundle mounts a
+console exporter, so a message that goes only to the logger is invisible on every stock
+install: this failure and an invalid policy file were both silently swallowed. `process.stderr`
+is what the headless runner itself writes to.
 
 ## 8. The path table runs over path-typed arguments only, after `realpathSync`
 
@@ -280,11 +286,11 @@ switch a redaction pass on. There is no `disable` key, no removal key, and no wa
 `auditLog`.
 
 Such a key does not make the plugin fail to mount, though — it invalidates the whole file,
-which is reported on the deployment's logger and ignored. Aborting `apply()` was worse in both
-directions: the README recommends a workspace-relative `policyFile`, so `dsh` refused to start
-in every repository that shipped none, and a hostile repository could remove the entire floor
-by committing two malformed lines. Neither outcome can loosen the floor now, and neither is
-silent.
+which is reported on `process.stderr` and the deployment's logger, then ignored. Aborting
+`apply()` was worse in both directions: the README recommends a workspace-relative
+`policyFile`, so `dsh` refused to start in every repository that shipped none, and a hostile
+repository could remove the entire floor by committing two malformed lines. Neither outcome
+can loosen the floor now, and neither is silent.
 
 An added `pattern` is checked before it is compiled: at most 200 characters, and no quantifier
 nested inside a quantified group. A repo-authored regular expression runs inside the
@@ -313,10 +319,10 @@ uses is imported with `import type`, so nothing from `@deepseek-ai/cordis` or th
 packages is emitted as a runtime import, and Cordis must come from the running installation
 rather than a copy.
 
-## 12. Coverage: 100% of `src/`, with three explicit exemptions
+## 12. Coverage: 100% of `src/`, with explicit exemptions
 
 CONVENTIONS §4 adopts upstream's per-file 100% bar for security code, and `vitest.config.ts`
-enforces it. Three arms use `/* v8 ignore */` with a stated reason, matching upstream's own
+enforces it. These arms use `/* v8 ignore */` with a stated reason, matching upstream's own
 convention:
 
 - `mapSecretlintSeverity`'s non-`error` arms — the recommended preset reports only `error`;
@@ -325,8 +331,11 @@ convention:
   the map is never empty there.
 - the `?? []` fallback in the prepared-scan memo — every string handed to the walkers was
   collected for that memo.
-- the `default` arm of the `RepoPolicyLoad` switch — unreachable while that union stays closed;
-  it exists so that adding a variant fails the build.
+- the `default` arm of the `RepoPolicyLoad` and `AuditFileRead` switches — unreachable while
+  those unions stay closed; the arms exist so that adding a variant fails the build.
+- the process entry at the bottom of `cli.ts` — instrumenting it would mean importing the
+  module as a program. `tests/e2e/report.e2e.ts` runs the built `lib/cli.js` as a subprocess
+  instead, which is the only form that proves the `bin` entry and its shebang work.
 
 ## 13. Invisible characters are split into a strip half and a report half
 

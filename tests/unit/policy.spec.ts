@@ -12,11 +12,11 @@ import {
   loadRepoPolicy,
   parseRepoPolicy,
   PolicyError,
-  resolveDshHome,
   resolvePolicy,
   type Config,
 } from '../../src/policy.ts'
 import { SYNC_RULES } from '../../src/detectors.ts'
+import { resolveDshHome } from '../../src/home.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-dlp-policy-'))
 afterAll(() => { rmSync(home, { recursive: true, force: true }) })

@@ -129,11 +129,11 @@ raiseSeverity:
 enable: [telemetryRedaction]
 ```
 
-Any other key, and any downgrade, makes the **whole file invalid**: it is logged on the
-deployment's logger and ignored, never obeyed in part. There is no `disable`, no
-`removeCredentialPaths`, and no way to redirect the audit sink. The file is parsed with
-`js-yaml` under `JSON_SCHEMA`, so a `!!js/function` tag is a parse error rather than code
-execution, and it never goes near the Cordis loader.
+Any other key, and any downgrade, makes the **whole file invalid**: it is reported on
+`process.stderr` and the deployment's logger, then ignored, never obeyed in part. There is no
+`disable`, no `removeCredentialPaths`, and no way to redirect the audit sink. The file is
+parsed with `js-yaml` under `JSON_SCHEMA`, so a `!!js/function` tag is a parse error rather
+than code execution, and it never goes near the Cordis loader.
 
 A missing `policyFile` is not an error — it means the workspace ships no policy. The
 recommended value is workspace-relative, so failing the mount would stop `dsh` from starting in
@@ -365,8 +365,38 @@ repeat. A record is written whenever there is something to say, including a resu
 only counted and a result whose tier-2 scan was truncated.
 A record carries no free-text reason: the spans are the whole description of what matched, so
 nothing built from a candidate path or command line can reach the file. An audit write failure
-is logged and swallowed rather than turned into a denial: the sink is evidence, not
+is reported and swallowed rather than turned into a denial: the sink is evidence, not
 enforcement, and a full disk should not take the agent down.
+
+Reported means `process.stderr` **and** `ctx.logger`, for that failure and for an invalid
+policy file. The logger alone is not enough: its default exporter is an in-memory 1000-entry
+ring buffer and no shipped bundle mounts a console exporter, so a message sent only there is
+invisible on a stock install. `process.stderr` is what the headless runner itself writes to.
+
+---
+
+## Reading the audit log
+
+The package installs a `dsh-dlp` command that reads the JSONL sink and summarises it. It
+imports nothing from the harness, so it runs wherever the package is installed, with no profile
+and no `dsh` on the path:
+
+```sh
+dsh-dlp report                      # everything in $DSH_HOME/dsh-dlp.audit.jsonl
+dsh-dlp report --since 24h          # or an ISO timestamp
+dsh-dlp report --session <id>
+dsh-dlp report --would-have         # only the calls that were let through
+dsh-dlp report --log /var/log/dsh-dlp.audit.jsonl
+```
+
+It prints counts by decision, by rule, by tool and by invisible-character class, then the ten
+most recent decisions. `--would-have` drops the denials and leaves the redactions and the
+invisible-character findings: those are the calls that ran, with their results rewritten, and
+they are what a policy that denied instead of rewriting would have blocked.
+
+The sink is append-only and a run can be interrupted mid-append, so a line that does not parse
+as a record is counted and reported rather than trusted. If the deployment set `auditLog` to
+somewhere other than the default, pass `--log`; the command says which file it looked at.
 
 ---
 

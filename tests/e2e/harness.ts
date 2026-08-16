@@ -123,6 +123,8 @@ export interface AgentRunResult {
   readonly stderr: string
   /** Records the plugin appended to its own audit sink, in order. */
   readonly auditRecords: readonly Record<string, unknown>[]
+  /** The audit sink's bytes, for a test that runs the `report` command over them. */
+  readonly auditLogText: string
   /** The persisted session log, one parsed JSONL row per element. */
   readonly sessionLog: readonly Record<string, unknown>[]
   /** Wire requests the agent made, as captured by the mock. */
@@ -148,16 +150,19 @@ function filesUnder(dir: string): string[] {
   })
 }
 
-/** Parse a JSONL file into rows; a missing file yields an empty list. */
-function readJsonl(file: string): Record<string, unknown>[] {
-  let text: string
+/** Read a file, or the empty string when the run never created it. */
+function readText(file: string): string {
   try {
-    text = readFileSync(file, 'utf8')
+    return readFileSync(file, 'utf8')
   } catch {
     // ENOENT only: the plugin writes lazily and a run may record nothing.
-    return []
+    return ''
   }
-  return text.split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>)
+}
+
+/** Parse a JSONL file into rows; a missing file yields an empty list. */
+function readJsonl(file: string): Record<string, unknown>[] {
+  return readText(file).split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as Record<string, unknown>)
 }
 
 /** Directory of one installed package, resolved the way Node's own lookup would. */
@@ -322,6 +327,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       stdout,
       stderr,
       auditRecords: readJsonl(auditLog),
+      auditLogText: readText(auditLog),
       sessionLog: logFile === undefined ? [] : readJsonl(logFile),
       modelRequests: [...server.requests],
       home,

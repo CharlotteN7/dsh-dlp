@@ -16,11 +16,11 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import z from '@deepseek-ai/schemastery'
 import { SYNC_RULES, severityRank, type Severity, type SyncRule } from './detectors.ts'
+import { resolveDshHome } from './home.ts'
 import { CREDENTIAL_PATH_RULES, type CredentialPathRule } from './paths.ts'
 
 /** Deployment configuration, validated from `cordis.yml`. */
@@ -317,19 +317,6 @@ function selfProtectionRules(config: Config, dshHome: string): CredentialPathRul
     { id: 'dsh-dlp/path-dsh-sessions', version: 1, pattern: new RegExp(`^${home}/sessions(/|$)`, 'i') },
     { id: 'dsh-dlp/path-dsh-home', version: 2, enforcement: 'writes-only', pattern: new RegExp(`^${home}(/|$)`, 'i') },
   ]
-}
-
-/**
- * Resolve the harness home the same way the harness does: `$DSH_HOME` when it
- * is set to something other than whitespace, otherwise `~/.dsh`. Read here
- * rather than through `@deepseek-ai/dsh-home-paths` to keep the plugin's
- * runtime imports to the ones a profile is guaranteed to resolve.
- * @param env - environment consulted for `DSH_HOME`; defaults to `process.env`.
- * @returns the absolute harness home.
- */
-export function resolveDshHome(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env['DSH_HOME']
-  return resolve(configured !== undefined && configured.trim().length > 0 ? configured : join(homedir(), '.dsh'))
 }
 
 /**

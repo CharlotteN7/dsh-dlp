@@ -80,6 +80,22 @@ export function loadOrCreateKey(path: string): Buffer {
 }
 
 /**
+ * Report a plugin fault on both the deployment's logger and `process.stderr`.
+ *
+ * `ctx.logger`'s default exporter is an in-memory 1000-entry ring buffer and
+ * no shipped bundle mounts a console exporter, so a message that goes only to
+ * the logger is invisible on a stock install — which is what an invalid policy
+ * file and a failed audit write were. `process.stderr` is what the headless
+ * runner itself writes to.
+ * @param ctx - the plugin's context, used for its logger.
+ * @param message - the whole line to report; never carries a matched value.
+ */
+function report(ctx: Context, message: string): void {
+  ctx.logger.error(message)
+  process.stderr.write(`${message}\n`)
+}
+
+/**
  * Load the repo-local policy tier, if the deployment named one.
  *
  * A missing file is no policy at all, and a malformed one is reported and
@@ -87,7 +103,7 @@ export function loadOrCreateKey(path: string): Buffer {
  * well-formed: the recommended `policyFile` is workspace-relative, so failing
  * the mount would refuse to start `dsh` in every repository without one, and
  * would let a hostile repository disable the plugin by shipping a broken file.
- * @param ctx - the plugin's context, used only for its logger.
+ * @param ctx - the plugin's context, used only to report a bad file.
  * @param policyFile - the configured path, or `undefined` when the deployment named none.
  * @returns the validated policy, or `undefined` when there is none to apply.
  */
@@ -100,7 +116,7 @@ function loadConfiguredPolicy(ctx: Context, policyFile: string | undefined): Rep
     case 'loaded':
       return load.policy
     case 'invalid':
-      ctx.logger.error(`dsh-dlp: ignoring the repo-local policy at ${policyFile}: ${load.problem}`)
+      report(ctx, `dsh-dlp: ignoring the repo-local policy at ${policyFile}: ${load.problem}`)
       return undefined
     /* v8 ignore next 4 -- unreachable while `RepoPolicyLoad` stays closed; the arm exists so adding a variant fails the build. */
     default: {
@@ -120,7 +136,7 @@ export function apply(ctx: Context, config: Config): void {
   const hasher = new SpanHasher(loadOrCreateKey(config.redactionKeyFile))
   const correlator = new CallCorrelator()
   const sink = new AuditSink(config.auditLog, (error) => {
-    ctx.logger.error(`dsh-dlp: audit sink write failed: ${String(error)}`)
+    report(ctx, `dsh-dlp: audit sink write failed: ${String(error)}`)
   })
 
   /** Identity every audit record carries; the session-log envelope carries none of it. */

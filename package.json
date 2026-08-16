@@ -27,6 +27,9 @@
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "bin": {
+    "dsh-dlp": "lib/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",
