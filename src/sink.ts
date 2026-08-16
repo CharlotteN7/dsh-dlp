@@ -56,10 +56,16 @@ export interface AuditRecord {
   readonly callId?: string
   readonly rootCallId?: string
   readonly tool?: string
-  /** Redacted regions: rule identity, offsets, and a keyed hash only. */
+  /**
+   * Redacted or denied regions: rule identity, offsets, and a keyed hash only.
+   *
+   * This is the whole description of what matched. The model-facing denial
+   * text is deliberately not recorded: it names a tool and quotes nothing, but
+   * a reason built from a candidate would put the candidate — a shell command
+   * line, a tenant directory — into a durable file, which is exactly what this
+   * sink exists to avoid.
+   */
   readonly spans?: readonly RedactedSpan[]
-  /** Model-facing denial text; contains rule identities, never matched values. */
-  readonly reason?: string
   /** Set when the scanned input exceeded the byte cap. */
   readonly truncatedScan?: boolean
   /** Telemetry record channel, for `telemetry-redaction`. */

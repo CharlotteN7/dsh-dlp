@@ -118,7 +118,6 @@ export function apply(ctx: Context, config: Config): void {
       kind: 'guard-deny',
       decisionId: newDecisionId(),
       ...identity(exec),
-      reason: verdict.reason,
       spans: verdict.spans,
     })
     return verdict.reason
@@ -136,7 +135,7 @@ export function apply(ctx: Context, config: Config): void {
         kind: 'pre-execute-deny',
         decisionId: newDecisionId(),
         ...identity(exec),
-        reason: finding.reason,
+        spans: finding.spans,
       })
       return breadthTierDenial(finding.reason)
     })
