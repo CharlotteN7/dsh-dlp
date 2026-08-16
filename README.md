@@ -3,7 +3,7 @@
 Data-loss prevention for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
 built as an out-of-repo plugin.
 
-It does four things:
+It does five things:
 
 1. **Denies credential-file access and secrets bound for the network** — unconditionally, from
    `ctx.tools.guard()`. It tests the path-typed arguments of a call against a table of
@@ -12,8 +12,12 @@ It does four things:
    log records them, and withholds a result it cannot clean.
 3. **Redacts secrets out of exported telemetry**, patching a hole where `DSH_TELEMETRY_MODE=FULL`
    ships message text, tool arguments, tool results and workspace paths in the clear.
-4. **Writes an audit record for every decision** to its own sink — rule id, rule version,
+4. **Strips the invisible characters that carry hidden instructions** out of tool results —
+   the Tags block and bidi overrides — and counts the classes it will not touch because they
+   also appear in legitimate text.
+5. **Writes an audit record for every decision** to its own sink — rule id, rule version,
    offsets, and a keyed hash. Never the secret, and never the path or command that matched.
+   `dsh-dlp report` reads that sink back.
 
 ---
 
@@ -43,12 +47,30 @@ More limits worth stating up front:
   the session log and already presented to the model, so rewriting them would desynchronise
   the log from what actually ran. Argument-level DLP here is *denial with a reason the model
   can act on*.
-- **Outbound prompts cannot be rewritten.** `llm/stream` options are deep-frozen and `next()`
-  takes no arguments. A secret already in the conversation reaches the provider.
+- **Already-logged history cannot be rewritten; a not-yet-logged inbound message can.** At
+  `llm/stream` the options are deep-frozen and `next()` takes no arguments, so a request the
+  agent has assembled goes out as it stands and a secret already in the conversation reaches
+  the provider. That is not the whole rule, though: `agent/pre-step` is an async waterfall
+  returning `{ kind: 'enter'; messages }`, and the only production append of `user/message`
+  happens *after* it, so a message arriving from outside can still be rewritten before it is
+  logged or presented. This release does not do that; it is recorded here because the earlier
+  flat claim that outbound redaction is impossible was too strong.
+- **A redacted value is not restored when the agent runs a command.** `ctx.shellEnv` rebuilds a
+  trusted `DSH_*` namespace for every model shell call, which is a way to hand `bash` and
+  `pwsh` — and only those two — the real value behind a placeholder without the model ever
+  seeing it. Planned work, not implemented here.
 - **Detection is pattern-based.** A password, an internal token format, or a customer record
   has no recognisable structure and is not detected. Neither is any encoded form: base64,
   hex, URL-escaping and reversal all pass both tiers, as does a secret split across two
-  content blocks.
+  content blocks. **A homoglyph defeats every rule in this package**, including the
+  invisible-character ones.
+- **There is no entropy rule, and that was measured rather than assumed.** Shannon entropy is
+  bounded by log₂L for a string of length L, so a 20-character token cannot score above 4.32
+  bits per character however random it is. At the threshold where ordinary tool output —
+  hashes, minified bundles, base64 blobs, UUIDs — produces no false positives, the miss rate
+  is 100% for anything up to 22 characters, which is most of the credential formats worth
+  catching. A detector that fires on the long ones the prefix rules already catch and misses
+  the rest is not worth the false positives it costs.
 
 The full list is in [PLAN.md §8](PLAN.md).
 
@@ -400,6 +422,13 @@ they are what a policy that denied instead of rewriting would have blocked.
 The sink is append-only and a run can be interrupted mid-append, so a line that does not parse
 as a record is counted and reported rather than trusted. If the deployment set `auditLog` to
 somewhere other than the default, pass `--log`; the command says which file it looked at.
+
+A plugin installed into a profile puts its bin in that profile's `node_modules/.bin`, which is
+not on `PATH`. Run it from there, or install the package globally:
+
+```sh
+"$DSH_HOME/profiles/<name>/node_modules/.bin/dsh-dlp" report
+```
 
 ---
 

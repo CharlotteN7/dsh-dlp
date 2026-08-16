@@ -24,10 +24,14 @@ survived contact with the code.
 - **Containment.** The plugin runs in-process at the agent's own uid. Any code the agent
   can run — `bash`, `run_code`, a mounted MCP server — can read the same files the guard
   denies and can open its own sockets. This closes a *model-mediated* gap, not a kernel one.
-- **Outbound prompt redaction.** `llm/stream` options are deep-frozen and `next()` takes no
-  arguments. Rewriting an outbound request is impossible; only blocking is available, and
+- **Rewriting an assembled model request.** `llm/stream` options are deep-frozen and `next()`
+  takes no arguments, so a request the agent has already built can only be blocked, and
   blocking a whole request on a detection is a worse failure mode than the leak it prevents
-  for the messages the model itself authored. Not implemented in this phase.
+  for the messages the model itself authored. The accurate rule is narrower than "outbound
+  redaction is impossible": already-logged history cannot be rewritten, but a not-yet-logged
+  inbound message can be — `agent/pre-step` is an async waterfall returning
+  `{ kind: 'enter'; messages }` and the only production append of `user/message` happens after
+  it. Not implemented.
 - **Rewriting tool arguments.** Model-visible ⟺ logged: arguments are already in the log and
   already presented, so masking them would desynchronise the log from what ran. Argument-level
   DLP is *deny with a structured reason*, never mask.
@@ -37,9 +41,11 @@ survived contact with the code.
 - **File-write DLP.** `write`/`edit`/`str_replace_editor` put data on local disk, not on a
   socket. Treated as non-egress; a synced or shared directory defeats that assumption and the
   README says so.
-- **Entropy-only detection.** No generic "looks random" rule in phase 1: the false-positive
-  cost on a coding agent's tool results (hashes, minified bundles, base64 blobs) is too high
-  for a redactor that rewrites what the model reads.
+- **Entropy-only detection.** Measured and rejected, not deferred: Shannon entropy is bounded
+  by log₂L, so a 20-character token cannot score above 4.32 bits per character however random
+  it is. At the threshold where ordinary tool results — hashes, minified bundles, base64 blobs,
+  UUIDs — produce no false positives, the miss rate is 100% for anything up to 22 characters.
+  It would fire only on the long formats the prefix rules already catch.
 
 ---
 
@@ -51,11 +57,14 @@ src/
   policy.ts      Config schema, repo-local policy loading, tighten-only merge
   detectors.ts   synchronous rule table + sync scanner; async @secretlint/core engine
   redaction.ts   span expansion/merge, keyed-hash placeholder, text and JSON redaction
-  paths.ts       credential-path matcher; egress-capable tool classification
+  paths.ts       credential-path matcher; egress and read-only tool classification
   guard.ts       the unconditional guard floor
   results.ts     tools/pre-execute breadth tier + tools/post-execute redaction
+  schema.ts      whether a redacted value still satisfies the tool's output.schema
   telemetry.ts   session-telemetry/record fail-closed redaction
   sink.ts        our own JSONL audit sink + tool/call turn/step correlation
+  home.ts        $DSH_HOME resolution and the default audit-sink path
+  cli.ts         the `dsh-dlp report` command; imports nothing from the harness
 ```
 
 Every registration goes through `ctx.on()` / `ctx.effect()`; disposers stay private.
@@ -459,31 +468,41 @@ Each phase is one conventional commit. Commits stay local.
 4. **Tool arguments are never masked.** They are already logged and presented. A secret the
    model itself typed into an argument to a *local* tool is recorded verbatim in `tool/call`.
    The only lever for egress-capable tools is denial.
-5. **Outbound prompts cannot be rewritten.** `llm/stream` options are deep-frozen and `next()`
-   takes no arguments. A secret already in the conversation history reaches the provider.
+5. **An assembled model request cannot be rewritten.** `llm/stream` options are deep-frozen and
+   `next()` takes no arguments, so a secret already in the conversation history reaches the
+   provider. A not-yet-logged inbound message is a different case and is rewritable at
+   `agent/pre-step`; nothing here does it yet.
 6. **Content replacement is presentation policy.** The `content` arm leaves the canonical
    `value` and the persisted `meta` untouched, which is why a success with anything to redact
    takes the `value` arm and an unrewritable `meta` is blocked instead.
 7. **Detection is pattern-based and therefore incomplete.** A secret with no recognisable
-   structure — a password, an internal token format, a customer record — is not detected. No
-   entropy rule in phase 1. Any encoding (base64, hex, URL-escaping, reversal) defeats both
-   tiers, as does splitting a secret across two content blocks.
+   structure — a password, an internal token format, a customer record — is not detected. Any
+   encoding (base64, hex, URL-escaping, reversal) defeats both tiers, as does splitting a
+   secret across two content blocks. A homoglyph defeats every rule in the package, the
+   invisible-character ones included, and no entropy rule would help: see §1.
 8. **Reported spans from `@secretlint/core` are advisory.** Mitigated by expansion to the
    nearest delimiter (whitespace, quotes, `=`, `:`, `,`, brackets), which over-redacts. A
    secret containing a delimiter could still be split across expansions.
-12. **The shell-command arm is advisory.** Tokenising a `bash` command line and testing the
-    tokens as paths catches an unobfuscated `cat ~/.ssh/id_rsa` and nothing more; one glob
-    character, a quote, a `$(...)`, or a different binary defeats it. It is not a control.
-13. **Replacing a value can fail the call.** The placeholder is re-validated against the
-    tool's `output.schema`; a schema constraining that string turns the redaction into a
-    `ToolOutputError`. A failed call is the intended outcome — the alternative is logging the
-    secret.
-14. **The repo-local pattern check is a heuristic.** A length cap and a nested-quantifier
+9. **The shell-command arm is advisory.** Tokenising a `bash` command line and testing the
+   tokens as paths catches an unobfuscated `cat ~/.ssh/id_rsa` and nothing more; one glob
+   character, a quote, a `$(...)`, or a different binary defeats it. It is not a control.
+10. **Replacing a value can fail the call.** The placeholder is re-validated against the
+    tool's `output.schema`. The listener checks that first and withholds the result with its
+    own message instead of letting the registry raise an opaque `ToolOutputError`, but the
+    call still fails — the alternative is logging the secret.
+11. **The repo-local pattern check is a heuristic.** A length cap and a nested-quantifier
     rejection stop the shapes that are easy to write and expensive to run; no syntactic check
     can prove a pattern runs in linear time.
-9. **`additionalContexts` are not redacted.** They are model-visible `UserMessage` payloads;
-   scanning them is future work.
-10. **Local writes are out of scope.** `write`/`edit` to a synced directory exfiltrate without
+12. **`additionalContexts` are not redacted.** They are model-visible `UserMessage` payloads;
+    scanning them is future work.
+13. **Local writes are out of scope.** `write`/`edit` to a synced directory exfiltrate without
     touching an egress-capable tool.
-11. **Telemetry redaction only covers a mounted backend's records.** A second exporter mounted
+14. **Telemetry redaction only covers a mounted backend's records.** A second exporter mounted
     outside the `session-telemetry/record` waterfall is not covered.
+15. **`$DSH_HOME` is readable by a read-only tool.** Profile manifests and the installed plugin
+    tree are ordinary work to read, so which plugins a profile loads is model-visible. Only
+    writes are denied wholesale there, plus reads of the credential material inside it.
+16. **The invisible-character scan is not capped.** `maxScanBytes` bounds tier 2 only. Clean
+    text costs nothing and one hidden instruction costs a fraction of a millisecond, but a
+    crafted 512 KB result of alternating invisible characters measured 56–113 ms. Capping it
+    would leave a hidden instruction past the cap unstripped and unreported, which is worse.
