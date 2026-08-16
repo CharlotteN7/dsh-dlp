@@ -56,8 +56,13 @@ export function loadOrCreateKey(path: string): Buffer {
   let existing: Buffer | undefined
   try {
     existing = readFileSync(path)
-  } catch {
-    // ENOENT on first mount; any other read failure resurfaces from the write below.
+  } catch (error: unknown) {
+    // Only absence means "first mount". A permission or I/O failure on an
+    // existing key must not mint a new one: every placeholder and every audit
+    // hash would change, silently breaking correlation with the whole history.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`dsh-dlp: cannot read the redaction key at ${path}: ${String(error)}`)
+    }
     existing = undefined
   }
   if (existing !== undefined) {
