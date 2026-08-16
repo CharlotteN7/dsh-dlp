@@ -183,7 +183,10 @@ export function apply(ctx: Context, config: Config): void {
       next: () => Promise<PostToolDecision>,
     ) => {
       const redacted = await redactDecision(await next(), result, policy, hasher)
-      if (redacted.spans.length > 0) {
+      // A truncated scan is recorded even with nothing found: without a record
+      // an operator cannot tell "this result was clean" from "this result was
+      // only partly examined".
+      if (redacted.spans.length > 0 || redacted.truncatedScan) {
         sink.write({
           v: RECORD_VERSION,
           time: new Date().toISOString(),
