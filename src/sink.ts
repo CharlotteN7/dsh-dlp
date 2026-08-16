@@ -41,6 +41,7 @@ export type AuditKind =
   | 'pre-execute-deny'
   | 'result-redaction'
   | 'telemetry-redaction'
+  | 'assistant-image-neutralized'
   | 'audit-failure'
 
 /** One durable record. Never carries matched secret text. */
@@ -76,6 +77,13 @@ export interface AuditRecord {
   readonly unicode?: Readonly<Record<string, number>>
   /** Telemetry record channel, for `telemetry-redaction`. */
   readonly channel?: string
+  /**
+   * Hostname of a neutralised remote image destination, for
+   * `assistant-image-neutralized`. The hostname only: a path and a query
+   * string are where an exfiltration payload rides, and this file must not
+   * carry it.
+   */
+  readonly host?: string
 }
 
 /** Append-only JSONL sink for this plugin's decisions. */

@@ -28,6 +28,7 @@ const baseConfig: Config = {
   breadthTier: false,
   resultRedaction: false,
   telemetryRedaction: false,
+  remoteImageNeutralization: false,
   redactTelemetryWorkspacePaths: false,
 }
 

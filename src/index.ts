@@ -14,6 +14,13 @@
  *    a result that cannot be cleaned is withheld rather than accepted.
  * 4. `session-telemetry/record` — fail-closed redaction of exported telemetry,
  *    reaching tier 1 only because the waterfall is synchronous.
+ * 5. `llm/stream` — neutralising remote markdown image destinations in
+ *    assistant output, before the text becomes a session event.
+ *
+ * The `llm/stream` registration mitigates a defect in the harness rather than
+ * in a deployment's own configuration: the missing Content-Security-Policy
+ * behind (5). It is partial, it does not close its channel, and README.md says
+ * so beside the feature.
  *
  * This plugin is not a containment boundary. It runs in-process at the agent's
  * own uid; anything the agent can execute can read the same files the guard
@@ -24,12 +31,14 @@
 import { randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
+import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionTelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
 import { loadRepoPolicy, resolvePolicy, type Config, type RepoPolicy } from './policy.ts'
 import { SpanHasher } from './redaction.ts'
 import { safeEvaluateGuard } from './guard.ts'
+import { neutralizeImageStream } from './images.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
 import { redactRecord } from './telemetry.ts'
 import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from './sink.ts'
@@ -228,6 +237,20 @@ export function apply(ctx: Context, config: Config): void {
       }
       return redacted.decision
     })
+  }
+
+  if (policy.remoteImageNeutralization) {
+    ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) =>
+      neutralizeImageStream(next(), (host) => {
+        sink.write({
+          v: RECORD_VERSION,
+          time: new Date().toISOString(),
+          kind: 'assistant-image-neutralized',
+          decisionId: newDecisionId(),
+          ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
+          host,
+        })
+      }))
   }
 
   if (policy.telemetryRedaction) {

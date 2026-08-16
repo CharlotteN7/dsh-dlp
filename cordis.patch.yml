@@ -19,4 +19,5 @@
         breadthTier: true
         resultRedaction: true
         telemetryRedaction: true
+        remoteImageNeutralization: true
         redactTelemetryWorkspacePaths: true

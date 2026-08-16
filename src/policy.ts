@@ -39,6 +39,8 @@ export interface Config {
   resultRedaction: boolean
   /** Whether `session-telemetry/record` redaction runs. */
   telemetryRedaction: boolean
+  /** Whether remote markdown image destinations are neutralised in assistant output. */
+  remoteImageNeutralization: boolean
   /** Whether telemetry's `session.cwd` attribute is replaced with a keyed hash. */
   redactTelemetryWorkspacePaths: boolean
 }
@@ -51,11 +53,18 @@ export const Config: z<Config> = z.object({
   breadthTier: z.boolean().default(true),
   resultRedaction: z.boolean().default(true),
   telemetryRedaction: z.boolean().default(true),
+  remoteImageNeutralization: z.boolean().default(true),
   redactTelemetryWorkspacePaths: z.boolean().default(true),
 })
 
 /** Config toggles a repo-local policy may switch on, and never off. */
-const ENABLEABLE = ['breadthTier', 'resultRedaction', 'telemetryRedaction', 'redactTelemetryWorkspacePaths'] as const
+const ENABLEABLE = [
+  'breadthTier',
+  'resultRedaction',
+  'telemetryRedaction',
+  'remoteImageNeutralization',
+  'redactTelemetryWorkspacePaths',
+] as const
 
 /** One toggle name a repo-local policy may name in `enable`. */
 export type EnableableToggle = typeof ENABLEABLE[number]
@@ -83,6 +92,7 @@ export interface ResolvedPolicy {
   readonly breadthTier: boolean
   readonly resultRedaction: boolean
   readonly telemetryRedaction: boolean
+  readonly remoteImageNeutralization: boolean
   readonly redactTelemetryWorkspacePaths: boolean
 }
 
@@ -342,6 +352,7 @@ export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy
     breadthTier: enabled('breadthTier'),
     resultRedaction: enabled('resultRedaction'),
     telemetryRedaction: enabled('telemetryRedaction'),
+    remoteImageNeutralization: enabled('remoteImageNeutralization'),
     redactTelemetryWorkspacePaths: enabled('redactTelemetryWorkspacePaths'),
   }
 }
