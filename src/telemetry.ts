@@ -10,15 +10,19 @@
  * listener is the missing rule set.
  *
  * The waterfall is synchronous (`next: () => SessionTelemetryRecord`), so only
- * tier 1 is reachable here. It is fail-closed by construction: the coordinator
- * dispatches inside its own containment, and a throwing listener withholds
- * that one record and never reaches the agent loop. This module therefore
- * throws rather than returning a record it could not fully process.
+ * tier 1 is reachable here — there is no seam on this path that can await, and
+ * a secret only `@secretlint/core` recognises survives it. It is fail-closed
+ * by construction: the coordinator dispatches inside its own containment, and a
+ * throwing listener withholds that one record and never reaches the agent
+ * loop. This module therefore throws rather than returning a record it could
+ * not fully process.
  *
- * Records mirroring `tool/result` are already clean, because
- * `tools/post-execute` redaction runs before the event is appended. The value
- * added here is on `user/message`, `assistant/message`, `tool/call` arguments,
- * and the workspace path.
+ * Records mirroring `tool/result` have already been through
+ * `tools/post-execute` redaction, which runs before the event is appended —
+ * but only for what that seam could reach, so this listener re-scans every
+ * record rather than trusting the event type. The value it adds beyond that is
+ * on `user/message`, `assistant/message`, `tool/call` arguments, and the
+ * workspace path.
  * @module dsh-dlp/telemetry
  */
 
@@ -58,7 +62,7 @@ export function redactRecord(
   hasher: SpanHasher,
 ): RedactedRecord {
   const spans: RedactedSpan[] = []
-  const scan = (text: string): readonly Detection[] => scanSync(text, policy.syncRules, policy.maxScanBytes).detections
+  const scan = (text: string): readonly Detection[] => scanSync(text, policy.syncRules).detections
 
   // `body` is `unknown` on the seam but is always the append-time-validated,
   // JSON-serializable `data` of a session event.

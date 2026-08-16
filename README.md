@@ -6,13 +6,14 @@ built as an out-of-repo plugin.
 It does four things:
 
 1. **Denies credential-file access and secrets bound for the network** — unconditionally, from
-   `ctx.tools.guard()`.
+   `ctx.tools.guard()`. It tests the path-typed arguments of a call against a table of
+   credential stores, following symlinks first.
 2. **Redacts secrets out of tool results** before the model reads them and before the session
-   log records them.
+   log records them, and withholds a result it cannot clean.
 3. **Redacts secrets out of exported telemetry**, patching a hole where `DSH_TELEMETRY_MODE=FULL`
    ships message text, tool arguments, tool results and workspace paths in the clear.
 4. **Writes an audit record for every decision** to its own sink — rule id, rule version,
-   offsets, and a keyed hash. Never the secret.
+   offsets, and a keyed hash. Never the secret, and never the path or command that matched.
 
 ---
 
@@ -27,8 +28,17 @@ for credential material through a tool. It does not stop code that is already ru
 If you need containment, that is the sandbox, `landlock-run`, filesystem permissions, and
 egress firewalling. Use this alongside them, not instead of them.
 
-Three more limits worth stating up front:
+More limits worth stating up front:
 
+- **The shell-command arm is advisory pattern-matching.** A `bash` command line is split on
+  shell-ish separators and each token is tested as a path. That catches an unobfuscated
+  `cat ~/.ssh/id_rsa`. It catches nothing that tries: `cat ~/.netr?` (one glob character),
+  `cat ~/.s""sh/id_r""sa`, `find ~ -name 'id_*' -exec cat {} +`, a `$(printf ...)`
+  reassembly, a base64 round-trip of the path, or `python3 -c` opening the file — every one
+  of those was verified to read the file with the guard abstaining. **Do not count this arm
+  as a control.** A shell command is a program, not a path, and the only way to decide what
+  it will open is to run it. If the agent has a shell, credential files need filesystem
+  permissions or a sandbox, not this plugin.
 - **Tool arguments are never masked.** Model-visible implies logged: arguments are already in
   the session log and already presented to the model, so rewriting them would desynchronise
   the log from what actually ran. Argument-level DLP here is *denial with a reason the model
@@ -36,7 +46,9 @@ Three more limits worth stating up front:
 - **Outbound prompts cannot be rewritten.** `llm/stream` options are deep-frozen and `next()`
   takes no arguments. A secret already in the conversation reaches the provider.
 - **Detection is pattern-based.** A password, an internal token format, or a customer record
-  has no recognisable structure and is not detected.
+  has no recognisable structure and is not detected. Neither is any encoded form: base64,
+  hex, URL-escaping and reversal all pass both tiers, as does a secret split across two
+  content blocks.
 
 The full list is in [PLAN.md §8](PLAN.md).
 
@@ -97,39 +109,72 @@ raiseSeverity:
 enable: [telemetryRedaction]
 ```
 
-Any other key, and any downgrade, is a **load-time error**. There is no `disable`, no
+Any other key, and any downgrade, makes the **whole file invalid**: it is logged on the
+deployment's logger and ignored, never obeyed in part. There is no `disable`, no
 `removeCredentialPaths`, and no way to redirect the audit sink. The file is parsed with
 `js-yaml` under `JSON_SCHEMA`, so a `!!js/function` tag is a parse error rather than code
 execution, and it never goes near the Cordis loader.
+
+A missing `policyFile` is not an error — it means the workspace ships no policy. The
+recommended value is workspace-relative, so failing the mount would stop `dsh` from starting in
+every repository without one, and would let a hostile repository remove the floor by shipping a
+broken file. An added `pattern` is capped at 200 characters and rejected if it nests a
+quantifier inside a quantified group: `^(a+)+$` blocks the synchronous guard for seconds on a
+27-character path. That check is a heuristic, not a proof of linear-time matching.
 
 ---
 
 ## What gets denied
 
-**Credential paths**, for every tool: `.env` (but not `.env.example`), anything under `.ssh/`,
-`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`, `~/.aws/credentials`, `$DSH_HOME/.credentials.yaml`,
-`.netrc`, `.npmrc`, `.pypirc`, `~/.kube/config`, `~/.docker/config.json`, gcloud credential
-files, and `*.pem`/`*.p12`/`*.pfx`/`*.jks`/`*.keystore`. Paths are normalised first, so `..`
-traversal, `~`, Windows separators and quoting do not evade the table; a shell command is also
-split into tokens, so `cat ~/.ssh/id_rsa && echo ok` matches.
+**Credential paths named in a path-typed argument**, for every tool: `.env` and `.env.*`
+directories (but not `.env.example`), anything under `.ssh/`,
+`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa` and their backups, `~/.aws/` and `~/.azure/`,
+`$DSH_HOME/.credentials.yaml`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`,
+`~/.config/gh/`, `~/.kube/` and `kubeconfig*`, `/etc/kubernetes/*.conf`,
+`~/.docker/config.json` and `.dockercfg`, gcloud credential files, `rclone.conf`, `.pgpass`,
+`.my.cnf`, `*service-account*.json`, `*.pem`/`*.p12`/`*.pfx`/`*.jks`/`*.keystore`/`*.key`/
+`*.asc`/`*.gpg`, and any file whose name ends in a delimited `credential(s)`, `secret(s)` or
+`token(s)` — which covers `.vault-token`, `.gem/credentials`, `.cargo/credentials.toml`,
+`.terraform.d/credentials.tfrc.json` and a Kubernetes service-account `token`. Source and
+documentation extensions are excluded from that last rule, so `src/auth/token.ts` stays
+readable.
+
+Also denied: this plugin's own `redactionKeyFile` and `auditLog`, and everything under
+`$DSH_HOME`. The harness home holds the provider credentials, the session logs, and the
+profiles that decide which plugins load at all; keep the files an agent is meant to work on
+somewhere else.
+
+Paths are normalised first — `..` traversal, `~`, Windows separators, quoting and a trailing
+slash do not evade the table — and then resolved with `realpathSync`, so a symlink named
+`notes.txt` pointing at `~/.ssh/id_rsa` is denied by what it resolves to. Only path-typed
+argument keys are tested (`file_path`, `path`, `paths`, `notebook_path`, `cwd`, `command`, …).
+File content is never treated as a path: writing a `.gitignore` that lists `.env` is ordinary
+work, not an attempt to read a credential store.
 
 `$DSH_HOME/.credentials.yaml` is on that list because core permits reading it. The harness has
 no file-read restriction in any mode — reads pass through untouched in every permission mode —
 so the provider token the agent authenticates with is agent-readable. That is the specific gap
 this plugin closes.
 
-**Secrets in arguments**, for tools that can move data off the machine. Local tools (`read`,
-`glob`, `grep`, `write`, `edit`, `todo_write`, the session-query tools, …) are exempt.
+**Some secrets in arguments**, for tools that can move data off the machine. Local tools
+(`read`, `glob`, `grep`, `write`, `edit`, `todo_write`, the session-query tools, …) are exempt.
 Everything else — every shell, `run_code`, the web tools, every `mcp__*` tool, and any tool
 this build has never heard of — is treated as egress-capable. Unknown defaults to the safe side.
 
-A denial reads like this, and reaches the model as the tool's error result:
+What this arm actually catches is a whole, unencoded secret of `high` severity or above sitting
+in one argument string. `A=ghp_firsthalf; B=…; curl -H "Bearer $A$B"`, a base64 round-trip, and
+`$(cat ~/.token)` all defeat it; a `password=` assignment is `medium` and is redacted rather
+than denied. Treat it as a guard against accident, not against an adversary.
+
+A denial reads like this, and reaches the model as the tool's error result. It names the rule
+and a keyed hash, never the path — a path is itself sensitive, and this string is written to
+the model and, in hashed form, to the audit sink:
 
 ```
-dsh-dlp denied "read": "/home/dev/.aws/credentials" is credential material (rule
-dsh-dlp/path-aws). Reading or passing credential files through a tool is blocked by policy
-and cannot be overridden. Ask the user to supply the value you need, or use a path that is
-not a credential store.
+dsh-dlp denied "read": one of its path arguments is credential material (rule
+dsh-dlp/path-aws, keyed hash ca9cad27f2b5). Reading or passing credential files through a
+tool is blocked by policy and cannot be overridden. Ask the user to supply the value you
+need, or use a path that is not a credential store.
 ```
 
 ---
@@ -150,9 +195,26 @@ token down.
 For a successful tool result the plugin replaces the canonical `value`, which makes the registry
 re-validate the tool's `output.schema`, re-run `output.render()` and re-derive
 `presentationMeta()` — so the value, the model-facing content and the persisted card are all
-redacted from one replacement. For a failed result it replaces `content` instead, because
-replacing the value of a failed result throws. On that arm the canonical value keeps the
-original text: content replacement is presentation policy, not confidentiality policy.
+redacted from one replacement. That arm is not a preference: the alternative, replacing
+`content`, leaves `{...result}` in place, and `value` and `meta` go into the session log
+exactly as the tool produced them. A successful result therefore never settles for the content
+arm, which is used only for a failed result (where replacing the value throws) or where the
+persisted surfaces are already clean.
+
+When neither works — a failed result whose `meta` carries a secret, or a value that still scans
+dirty after redaction — the result is **withheld**: the plugin returns a `block` decision, the
+model gets an error naming the rule and the hash, and nothing dirty reaches the log. Blocking
+is the only decision that replaces the whole result, so it is the only way to drop `meta`.
+
+Two consequences worth knowing:
+
+- Replacing a value re-validates it against the tool's `output.schema`. A schema that
+  constrains that string (a length, a pattern, an enum) rejects the placeholder and the call
+  fails with a `ToolOutputError`. A failed call is the intended outcome; the alternative is
+  writing the secret to the log.
+- Redaction is per-detection, and each span grows to the nearest delimiter — whitespace,
+  quotes, `=`, `:`, `,`, brackets. A line of minified JSON loses the field that matched, not
+  the whole line.
 
 Replacement runs before the `tool/result` session event is appended, so the durable log records
 the redacted copy.
@@ -163,15 +225,24 @@ Two tiers:
 
 - **Tier 1**, synchronous and owned by this package: prefix-anchored token formats (AWS,
   GitHub, Slack, Stripe, OpenAI, Anthropic, Google, npm), PEM private-key blocks, JWTs,
-  credential-bearing URLs, and high-signal secret assignments. This is the tier the guard and
-  the telemetry listener use, because both of those seams are synchronous.
+  credential-bearing URLs, Slack/Discord/Teams webhook URLs, and high-signal secret
+  assignments. This is the tier the guard and the telemetry listener use, because both of
+  those seams are synchronous, and it is never capped.
 - **Tier 2**, [`@secretlint/core`](https://github.com/secretlint/secretlint) with the
   recommended preset — 28 maintained rules, in-process, no subprocess. Used at
-  `tools/pre-execute` and `tools/post-execute`, the two seams that can await.
+  `tools/pre-execute` and `tools/post-execute`, the two seams that can await. **The telemetry
+  seam cannot reach it**: `session-telemetry/record` returns a record synchronously, so a
+  secret only secretlint recognises survives telemetry export.
+
+A tool result is scanned twice: each of its strings on its own by tier 1, and all of them
+joined by newlines through both tiers. The joined pass finds what no single string reproduces —
+a PEM block arriving as one line per array element, which is exactly the shape `read` produces.
 
 Measured cost of a tier-2 scan: 0.78 ms at 1 KB, 0.91 ms at 16 KB, 2.22 ms at 128 KB, 5.11 ms
-at 512 KB. `maxScanBytes` caps it; input past the cap is scanned by tier 1 only and the audit
-record says `truncatedScan: true`.
+at 512 KB. `maxScanBytes` caps **tier 2 only**, once per result, over the joined rendering;
+tier 1 always scans everything. When tier 2 saw less than the whole result the audit record
+says `truncatedScan: true`, and that record is written even when nothing was found, so a
+partial scan never looks like a clean one.
 
 ---
 
@@ -209,15 +280,17 @@ its own identity.
 ```
 
 `kind` is one of `guard-deny`, `pre-execute-deny`, `result-redaction`, `telemetry-redaction`.
-An audit write failure is logged and swallowed rather than turned into a denial: the sink is
-evidence, not enforcement, and a full disk should not take the agent down.
+A record carries no free-text reason: the spans are the whole description of what matched, so
+nothing built from a candidate path or command line can reach the file. An audit write failure
+is logged and swallowed rather than turned into a denial: the sink is evidence, not
+enforcement, and a full disk should not take the agent down.
 
 ---
 
 ## Development
 
 ```sh
-. ../env.sh          # Node 22.23.2 + pnpm 11.7.0
+nvm use 22           # Node ^22.19.0 || >=24, and pnpm 11
 pnpm install
 pnpm run typecheck
 pnpm run test        # unit
@@ -225,5 +298,7 @@ pnpm run test:coverage
 pnpm run test:e2e    # boots a real dsh against a mock model; no API key
 ```
 
-`DSH_REPO` points the E2E harness at a harness checkout (default
-`../dsh`); it needs `pnpm run build:lib:host` to have run there at least once.
+The E2E harness boots a `dsh` checkout beside this one (`../dsh`); point `DSH_REPO` elsewhere
+to override. That checkout needs `pnpm run build:lib:host` to have run at least once. Set
+`DSH_CLI` to an installed `node_modules/@deepseek-ai/dsh/lib/bin.js` to run against the
+published CLI instead, which needs no monorepo — that is what CI does.

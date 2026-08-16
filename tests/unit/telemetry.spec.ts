@@ -10,6 +10,7 @@ import { redactRecord, WORKSPACE_PATH_RULE } from '../../src/telemetry.ts'
 import { resolvePolicy, type Config } from '../../src/policy.ts'
 import { SpanHasher } from '../../src/redaction.ts'
 
+/** Shaped like a Slack bot token; invented for this test, never a live credential. */
 const SLACK = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
 const hasher = new SpanHasher(Buffer.from('dsh-dlp-unit-test-key-000000000000', 'utf8'))
 const config: Config = {

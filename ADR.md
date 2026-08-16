@@ -75,13 +75,19 @@ secret. Splicing the reported span alone leaves the remaining 24 characters of t
 place.
 
 Redaction therefore never uses a reported span directly. Every span is expanded outward until
-both edges sit on whitespace or a string boundary, and overlapping spans merge into one
+both edges sit on a delimiter or a string boundary, and overlapping spans merge into one
 placeholder attributed to the strictest rule that touched it. Over-redaction — the key's name
 disappearing along with its value — is the safe direction. `tests/unit/redaction.spec.ts`
 pins the behaviour against the real scanner output rather than a fixture, so a future
 secretlint release that fixes the range will not silently un-pin it.
 
-Residual: a secret containing whitespace could still be split across two expansions. Recorded
+The delimiter set is whitespace, quotes, `=`, `:`, `,`, `;`, `&`, `?` and brackets, not
+whitespace alone. A line of minified JSON contains no whitespace at all, so expanding to
+whitespace replaced the entire record — every other field on the line — for one matched token.
+Bounding a secret at the syntax that separates values keeps the surrounding data intact while
+still covering the match.
+
+Residual: a secret containing a delimiter could still be split across two expansions. Recorded
 in PLAN.md §8.
 
 ## 5. Arm selection at `tools/post-execute`
@@ -93,40 +99,60 @@ type PostToolDecision =
   | { kind: 'block'; feedback: ContentBlock[]; … }
 ```
 
-A successful result with a `value` takes the **value** arm. The registry re-validates
-`output.schema`, re-runs `output.render()` and re-derives `output.presentationMeta()`, so one
-replacement redacts the canonical value, the model-facing content, and the card the UI persists
-in `meta`. The E2E run confirms all three: the `tool/result` event's rendered text and its
-`meta.lines[1].text` both carry the placeholder.
+A successful result whose `value` or `meta` carries anything takes the **value** arm. The
+registry re-validates `output.schema`, re-runs `output.render()` and re-derives
+`output.presentationMeta()`, so one replacement redacts the canonical value, the model-facing
+content, and the card the UI persists in `meta`. The E2E run confirms all three: the
+`tool/result` event's rendered text and its `meta` both carry the placeholder.
+
+The value arm is not a preference, it is the only arm that reaches the session log. Returning
+`accept{content}` leaves the registry with `{...result}`, so `value` and `meta` are appended
+exactly as the tool produced them while the model sees a placeholder — a redaction that reports
+success and writes the secret down. A successful result therefore never settles for the content
+arm.
 
 A failed result takes the **content** arm, because `accept{value}` throws a `TypeError` on a
 failed result. Error text is exactly where a leaked token hides — a stack trace quoting a
-command line, a provider error echoing a token — so the content arm is not a consolation
-prize. The documented cost is that the canonical `value` is untouched on that arm ("content
-replacement is presentation policy, not confidentiality policy"), which matters for a
-`run_code` program that receives the value directly. Recorded as a limitation rather than
-papered over.
+command line, a provider error echoing a token. A success whose secret exists only in the
+rendered content takes it too, since the persisted surfaces are already clean there.
 
-The two arms are mutually exclusive at runtime — the registry runs an `Object.hasOwn` check and
-throws a `TypeError` if both are present — so the implementation builds exactly one, and a unit
-test asserts it never builds both.
+When neither arm can clean what will be persisted — a failed result whose `meta` carries a
+secret, or a value that still scans dirty after redaction — the listener returns **block**.
+`block` is the only decision that replaces the whole result, and therefore the only one that
+drops `meta`. The model gets an error naming the rule and the keyed hash.
+
+Two costs, both recorded rather than papered over:
+
+- Replacing a value re-validates it against `output.schema`, so a schema constraining that
+  string turns a redaction into a `ToolOutputError`. A failed call is the intended outcome; the
+  alternative is writing the secret to the log.
+- Blocking discards a result the user may have wanted. It happens only where the alternative is
+  a durable leak.
+
+The two accept arms are mutually exclusive at runtime — the registry runs an `Object.hasOwn`
+check and throws a `TypeError` if both are present — so the implementation builds exactly one,
+and a unit test asserts it never builds both.
 
 **Composition:** the listener `await next()` first and redacts *the decision that came back*,
 never the original `result`. Redacting the original would silently discard a downstream
-listener's own replacement.
+listener's own replacement. The one exception is a downstream `accept{content}` over a value
+that is dirty: the value arm overrules it, because keeping the content replacement would leave
+the value in the session log. The harness re-renders from the redacted value.
 
-### The probe
+### Scanning the rendering, not only the strings
 
-A bare `accept` on a clean result is the common case and must stay cheap. The listener first
-scans one probe string — the serialized value plus the rendered text — and returns immediately
-when it is clean. That is a single `lintSource` call per tool result. Only when the probe hits
-does it scan the individual strings, capped at 128 tier-2 scans per result (a `read` of a large
-file arrives as thousands of separate line strings); the rest fall back to tier 1 and the audit
-record is marked `truncatedScan`.
+A per-string walk cannot see a secret that no single string reproduces, and that is the common
+case rather than an exotic one: `read` hands back one string per line, so a PEM block matches
+nothing anywhere. The listener therefore scans twice — every string on its own with tier 1, and
+all of them joined with newlines through both tiers — and maps the joined pass's offsets back
+onto the individual strings before splicing.
 
-A probe hit that no individual string reproduces — a secret split across two JSON fields, so it
-exists only in the serialization — falls through to the content arm rather than being dropped.
-A unit test pins that path with a PEM block split across three fields.
+That also fixes the budget. Tier 2 runs once per result over the joined rendering, capped by
+`maxScanBytes`, so how many pieces a tool split its output into no longer decides how much of
+it is examined. Tier 1 is never capped: it is a linear pass over the same text, and capping the
+cheap tier fails open for nothing. Whenever tier 2 saw less than the whole rendering the audit
+record carries `truncatedScan: true`, and that record is written even when nothing was found —
+without it an operator cannot tell a clean result from an unscanned one.
 
 ## 6. Redaction placeholders are keyed hashes, and the key is per-installation
 
@@ -162,17 +188,44 @@ together with a `callId` is the `tool/call` session event, so a small `session/e
 keeps a bounded `callId → { turn, step }` map, evicted on `tool/result` and capped at 512
 entries. That is why the plugin registers a `session/event` listener at all.
 
+**A record carries no free-text reason.** The model-facing denial string used to be stored
+verbatim, and that string used to quote the candidate that matched. For `bash` the candidate is
+the whole command line, so a command carrying a token and ending in `.pem` wrote the token into
+the audit file; for `read` it wrote the tenant and customer names in the path. A path is
+sensitive on its own. The spans — rule id, rule version, severity, offsets, keyed hash — are
+the whole description of what matched, in the record and in the reason handed to the model.
+
 **A sink write failure is logged and swallowed.** Turning it into a denial would trade a
 confidentiality control for an availability outage — a full disk would make every tool call
 fail — and a throwing guard would also skip `tools/post-execute` and disable redaction. The
 verdict never depends on whether the record was written.
 
-## 8. Credential-path denial applies to every tool, argument denial only to egress tools
+## 8. The path table runs over path-typed arguments only, after `realpathSync`
 
 A shell that can `cat` a key can also copy it, so the path table is enforced regardless of the
-tool's name. That does deny `write` to `.env`, which is an ordinary setup operation; the
-over-denial is deliberate and documented rather than carved out, because a carve-out on a
-security invariant is an attack surface.
+tool's name. *Which strings* it runs over is a different question, and running it over every
+string argument was wrong: `content`, `new_string` and `pattern` are file content, not paths,
+so writing a `.gitignore` listing `.env` was denied with a message saying the denial could not
+be overridden. The floor now reads a fixed allowlist of path-typed keys (`file_path`, `path`,
+`paths`, `notebook_path`, `cwd`, `command`, …) at any depth of the arguments. The allowlist is
+by key rather than by tool, because the tool registry is open: a per-tool table would abstain
+on every plugin and MCP tool this build has never heard of.
+
+Each candidate is matched twice — as written, and as `realpathSync` resolves it. A symlink
+named `notes.txt` pointing at `~/.ssh/id_rsa` is otherwise read in full, and the matcher never
+touched the filesystem. Resolution failure (a path being created, a broken link, an unreadable
+parent) falls back to the literal spelling.
+
+The table itself covers the credential stores of the tools an agent actually runs, including a
+filename heuristic for a delimited `credential(s)`, `secret(s)` or `token(s)`. That heuristic
+excludes source and documentation extensions: denying `src/auth/token.ts` would make any
+repository with an auth module unworkable, and an unusable floor gets switched off.
+
+`$DSH_HOME`, the plugin's own `redactionKeyFile` and its `auditLog` are appended to the
+resolved table at `apply()`. All three are known then, and none of them had any defence: the
+key file is what makes every placeholder hash keyed, the sink is the only evidence a decision
+happened, and the harness home holds the provider credentials, the session logs, and the
+profiles that decide which plugins load at all.
 
 Argument secrets are the opposite case. Denying `write` because the content it was asked to
 save contains a token would break ordinary work without closing an exfiltration path — the
@@ -180,6 +233,10 @@ bytes are going to local disk either way. So argument denial is scoped to tools 
 data off the machine, and the classification is an **allowlist of local tools with a
 deny-by-default tail**: every shell, `run_code`, the web tools, all `mcp__*` tools, and any
 tool this build has never heard of are treated as egress-capable.
+
+The shell-command arm inside all of this is advisory and the README says so. Tokenising a
+command line catches `cat ~/.ssh/id_rsa` and loses to one glob character. Deciding what a
+program will open requires running it.
 
 ## 9. The telemetry listener throws rather than degrading
 
@@ -191,17 +248,36 @@ event type, because `body` is whatever package declared the event and new event 
 without this plugin knowing them — a total walker is what keeps the listener from being wrong
 about a type it has never seen.
 
-Ledger records mirroring `tool/result` are already clean, because §5 ran before the event was
-appended. The value the listener adds is on `user/message`, `assistant/message`, `tool/call`
-arguments, and the `session.cwd` attribute.
+Ledger records mirroring `tool/result` have been through §5, which ran before the event was
+appended, but only over what that seam could reach; the listener re-scans every record rather
+than trusting the event type. Beyond that its value is on `user/message`, `assistant/message`,
+`tool/call` arguments, and the `session.cwd` attribute.
 
-## 10. The repo-local policy tier can only tighten, and says so loudly
+Only tier 1 is reachable here — `next()` returns a record, not a promise — so a secret only
+`@secretlint/core` recognises survives telemetry export. Webhook URLs are in the sync table for
+that reason; the general case is a documented limit, not a fixable one at this seam.
+
+## 10. The repo-local policy tier can only tighten, and a bad one is ignored loudly
 
 A `policyFile` lives in the workspace, so a hostile repository ships one and a prompt-injected
 agent can write one. It may add deny patterns, add egress tool names, raise a severity, and
 switch a redaction pass on. There is no `disable` key, no removal key, and no way to name
-`auditLog` — those are not ignored, they are **load-time errors**, because an ignored key looks
-like a working configuration to whoever wrote it.
+`auditLog`.
+
+Such a key does not make the plugin fail to mount, though — it invalidates the whole file,
+which is reported on the deployment's logger and ignored. Aborting `apply()` was worse in both
+directions: the README recommends a workspace-relative `policyFile`, so `dsh` refused to start
+in every repository that shipped none, and a hostile repository could remove the entire floor
+by committing two malformed lines. Neither outcome can loosen the floor now, and neither is
+silent.
+
+An added `pattern` is checked before it is compiled: at most 200 characters, and no quantifier
+nested inside a quantified group. A repo-authored regular expression runs inside the
+**synchronous** guard, where `^(a+)+$` on a 27-character path blocked the event loop for 3.1
+seconds — a denial of service any workspace could ship. The check is a heuristic and is
+documented as one: no syntactic test proves a pattern runs in linear time, and `(a|a)+` still
+backtracks. It rejects the shape that is both easy to write and expensive to run, and the
+length cap bounds the rest.
 
 Parsed with `js-yaml` under `JSON_SCHEMA`, so `!!js/function` is a parse error rather than code
 execution, and never through the Cordis loader, whose `!!js` support is the reason it must not
@@ -234,3 +310,5 @@ convention:
   the map is never empty there.
 - the `?? []` fallback in the prepared-scan memo — every string handed to the walkers was
   collected for that memo.
+- the `default` arm of the `RepoPolicyLoad` switch — unreachable while that union stays closed;
+  it exists so that adding a variant fails the build.

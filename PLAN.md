@@ -116,16 +116,27 @@ type PostToolDecision =
 
 Arm selection:
 
-- **Success with a `value`** → `accept{value}`. The registry re-validates `output.schema`,
-  re-runs `output.render()`, and re-derives `output.presentationMeta()`, so the canonical
-  value, the model-facing content, and the persisted meta are all redacted from one
-  replacement. This is confidentiality policy, not presentation policy.
-- **Failed result** (or a success carrying no value) → `accept{content}`. `accept{value}`
-  throws a `TypeError` on a failed result, and error text is exactly where a leaked secret
-  hides — a stack trace quoting the command line, a provider error echoing a token. The
-  canonical value is untouched on this arm; the docs are explicit that content replacement is
-  presentation policy, so the README states the residual.
+- **Success whose `value` or `meta` carries anything** → `accept{value}`. The registry
+  re-validates `output.schema`, re-runs `output.render()`, and re-derives
+  `output.presentationMeta()`, so the canonical value, the model-facing content, and the
+  persisted meta are all redacted from one replacement. This is the only arm that keeps a
+  secret out of the durable log, so a success never settles for `accept{content}`: the
+  content arm leaves `{...result}` in place, and `value` and `meta` are appended to the
+  session log exactly as the tool produced them.
+- **Failed result, or a success whose secret exists only in the rendered content** →
+  `accept{content}`. `accept{value}` throws a `TypeError` on a failed result, and error text
+  is exactly where a leaked secret hides — a stack trace quoting the command line, a provider
+  error echoing a token. This arm is only taken when the persisted surfaces are already clean.
+- **A dirty `meta` on a failed result, or a value that still scans dirty after redaction** →
+  `block`. No accept arm can rewrite `meta`, and `block` is the one decision that replaces the
+  whole result, so it is the only way to keep such a result out of the log.
 - **Downstream `block`** → the corrective `feedback` blocks are redacted in place.
+
+Detection runs over the strings of `value`, `content` and `meta` twice: each string on its own
+with tier 1, and all of them joined with newlines through both tiers. The joined pass is what
+finds a secret no single string reproduces — a PEM block arriving as one `lines[i].text` per
+line, which is exactly the shape `read` produces — and its offsets are mapped back onto the
+individual strings before splicing.
 
 The two `accept` arms are mutually exclusive at runtime (`Object.hasOwn` check throws
 `TypeError`), so the implementation builds exactly one.
@@ -154,8 +165,13 @@ its own containment, and a throwing listener withholds that one record and never
 agent loop. Our listener therefore throws rather than passing a record through when redaction
 cannot complete.
 
-Ledger records mirroring `tool/result` are *already* redacted, because §3.3 ran before the
-event was appended. The value this listener adds is on the events §3.3 never sees:
+Only tier 1 is reachable here, and there is no other seam on the export path that can await:
+a secret only `@secretlint/core` recognises survives telemetry export. The sync table carries
+webhook URLs for that reason.
+
+Ledger records mirroring `tool/result` have been through §3.3, which ran before the event was
+appended — but only over what that seam could reach, so this listener re-scans every record
+rather than trusting the event type. Beyond that its value is on the events §3.3 never sees:
 `user/message`, `assistant/message`, `tool/call` arguments, and the `session.cwd` attribute.
 
 ### 3.5 Durable output — our own sink
@@ -212,10 +228,13 @@ preset, steady state:
 | 512 KB | 5.11 ms |
 
 Budget: **≤ 10 ms per tool result**, enforced by a configurable `maxScanBytes` (default 1 MiB).
-Input above the cap is scanned by tier 1 only, and the audit record marks the result
-`truncatedScan: true` so a reviewer can see the scan was partial rather than clean. Tier 1 is
-pure `RegExp.exec` over the same text; its cost is a small fraction of tier 2's. No subprocess,
-no I/O, no network on any scan path.
+The cap applies to tier 2 only. Tier 1 is pure `RegExp.exec` and always scans the whole input;
+capping it would fail open on the cheap tier for no benefit. `maxScanBytes` is the single
+budget: one `lintSource` call per result over the joined rendering, so how many strings a tool
+split its output into never changes how much of it is examined. Whenever tier 2 saw less than
+the whole rendering the audit record carries `truncatedScan: true` — and that record is written
+even when nothing was found, so "clean" and "not fully scanned" stay distinguishable. No
+subprocess, no I/O, no network on any scan path.
 
 ---
 
@@ -238,8 +257,16 @@ write one. It may only:
 - **enable** a redaction pass the deployment left off.
 
 Every other key, and any attempt to remove a pattern, disable a detector, lower a severity, or
-redirect the audit sink, is a **load-time error**, not a silent ignore. Misconfiguration fails
-loud.
+redirect the audit sink, makes the **whole file invalid**: it is reported on the deployment's
+logger and ignored, never obeyed in part. A missing file is simply no repo-local policy —
+`policyFile` names a path inside the workspace, and most repositories will not have one, so
+refusing to mount would stop `dsh` from starting in every such repository and would hand a
+hostile repository a way to remove the floor by shipping a broken file. Neither outcome ever
+loosens the floor.
+
+An added pattern is also checked before it is compiled: at most 200 characters, and no
+quantifier nested inside a quantified group. `^(a+)+$` blocks the synchronous guard for
+seconds on a 27-character input, which any workspace could otherwise ship.
 
 Parsed with `js-yaml` under `JSON_SCHEMA`, so `!!js/function` is a parse error rather than code
 execution. Never routed through the Cordis loader.
@@ -279,8 +306,11 @@ would let anyone holding a candidate secret confirm it from the audit log.
 ### 5.4 What is logged about a finding
 
 `ruleId`, rule `version`, `start`/`end` offsets, `severity`, and the keyed hash. **Never the
-matched value**, never a prefix of it, never its length beyond the offsets. This holds in the
-audit sink, in deny reasons handed to the model, and in any log line.
+matched value**, never a prefix of it, never its length beyond the offsets — and never the
+candidate that matched, because a path is itself sensitive: a tenant directory, a customer
+database name, or a whole shell command line that happens to end in `.pem`. This holds in the
+audit sink, in deny reasons handed to the model, and in any log line. The sink records no
+free-text reason at all; the spans are the whole description.
 
 ---
 
@@ -431,14 +461,26 @@ Each phase is one conventional commit. Commits stay local.
    The only lever for egress-capable tools is denial.
 5. **Outbound prompts cannot be rewritten.** `llm/stream` options are deep-frozen and `next()`
    takes no arguments. A secret already in the conversation history reaches the provider.
-6. **Content replacement is presentation policy.** On a failed result the canonical `value` is
-   untouched by the `content` arm; a `run_code` program that receives that value sees the
-   original text.
+6. **Content replacement is presentation policy.** The `content` arm leaves the canonical
+   `value` and the persisted `meta` untouched, which is why a success with anything to redact
+   takes the `value` arm and an unrewritable `meta` is blocked instead.
 7. **Detection is pattern-based and therefore incomplete.** A secret with no recognisable
    structure — a password, an internal token format, a customer record — is not detected. No
-   entropy rule in phase 1.
-8. **Reported spans from `@secretlint/core` are advisory.** Mitigated by whitespace expansion,
-   which over-redacts. A secret containing whitespace could still be split across expansions.
+   entropy rule in phase 1. Any encoding (base64, hex, URL-escaping, reversal) defeats both
+   tiers, as does splitting a secret across two content blocks.
+8. **Reported spans from `@secretlint/core` are advisory.** Mitigated by expansion to the
+   nearest delimiter (whitespace, quotes, `=`, `:`, `,`, brackets), which over-redacts. A
+   secret containing a delimiter could still be split across expansions.
+12. **The shell-command arm is advisory.** Tokenising a `bash` command line and testing the
+    tokens as paths catches an unobfuscated `cat ~/.ssh/id_rsa` and nothing more; one glob
+    character, a quote, a `$(...)`, or a different binary defeats it. It is not a control.
+13. **Replacing a value can fail the call.** The placeholder is re-validated against the
+    tool's `output.schema`; a schema constraining that string turns the redaction into a
+    `ToolOutputError`. A failed call is the intended outcome — the alternative is logging the
+    secret.
+14. **The repo-local pattern check is a heuristic.** A length cap and a nested-quantifier
+    rejection stop the shapes that are easy to write and expensive to run; no syntactic check
+    can prove a pattern runs in linear time.
 9. **`additionalContexts` are not redacted.** They are model-visible `UserMessage` payloads;
    scanning them is future work.
 10. **Local writes are out of scope.** `write`/`edit` to a synced directory exfiltrate without

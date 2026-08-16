@@ -4,13 +4,16 @@
  * Four registrations, in descending order of how much they can be trusted:
  *
  * 1. `ctx.tools.guard()` — an unconditional, non-configurable deny floor for
- *    credential-path access and for secrets heading into an egress-capable
- *    tool. Order-independent, because the guard seam has no allow arm.
+ *    credential paths named in a path-typed argument and for secrets heading
+ *    into an egress-capable tool. Order-independent, because the guard seam
+ *    has no allow arm.
  * 2. `tools/pre-execute` — the async breadth tier, which can await
  *    `@secretlint/core`. Neutralizable by any listener registered ahead of it.
  * 3. `tools/post-execute` — result redaction, applied before the `tool/result`
- *    session event is appended, so the durable log records the redacted copy.
- * 4. `session-telemetry/record` — fail-closed redaction of exported telemetry.
+ *    session event is appended, so the durable log records the redacted copy;
+ *    a result that cannot be cleaned is withheld rather than accepted.
+ * 4. `session-telemetry/record` — fail-closed redaction of exported telemetry,
+ *    reaching tier 1 only because the waterfall is synchronous.
  *
  * This plugin is not a containment boundary. It runs in-process at the agent's
  * own uid; anything the agent can execute can read the same files the guard

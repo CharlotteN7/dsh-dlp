@@ -13,6 +13,7 @@ import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from '../../
 const home = mkdtempSync(join(tmpdir(), 'dsh-dlp-sink-'))
 afterAll(() => { rmSync(home, { recursive: true, force: true }) })
 
+/** Shaped like a Slack bot token; invented for this test, never a live credential. */
 const SLACK = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
 
 describe('the audit sink', () => {
