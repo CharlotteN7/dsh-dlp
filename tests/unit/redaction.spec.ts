@@ -15,6 +15,7 @@ import {
 
 const KEY = Buffer.from('dsh-dlp-unit-test-key-000000000000', 'utf8')
 const OTHER_KEY = Buffer.from('a-completely-different-unit-key-01', 'utf8')
+/** Shaped like a Slack bot token; invented for this test, never a live credential. */
 const SLACK = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
 
 const hasher = new SpanHasher(KEY)
@@ -75,6 +76,26 @@ describe('redacting one string', () => {
 
     expect(text).not.toContain(secret)
     expect(text).not.toContain(secret.slice(-8))
+  })
+
+  it('grows a span leftward only to the nearest delimiter', () => {
+    const source = `id=abc${SLACK}`
+    const advisory = [{ ruleId: 'test/mid-token', ruleVersion: 1, severity: 'critical' as const, start: 6, end: source.length }]
+
+    const { text, spans } = redactText(source, advisory, hasher)
+
+    expect(text).toBe(`id=[REDACTED:dsh-dlp:test/mid-token:${spans[0]?.hash}]`)
+  })
+
+  it('keeps the rest of a line of minified JSON', () => {
+    // Expanding to whitespace replaced the whole record: a JSON line has none.
+    const line = `{"user":"alice","token":"${SLACK}","order_id":12345}`
+
+    const { text } = redactText(line, detect(line), hasher)
+
+    expect(text).not.toContain(SLACK)
+    expect(text).toContain('"user":"alice"')
+    expect(text).toContain('"order_id":12345')
   })
 
   it('merges overlapping spans into one placeholder', () => {

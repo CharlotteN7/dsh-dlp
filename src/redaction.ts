@@ -89,12 +89,20 @@ export function placeholderFor(span: Pick<RedactedSpan, 'ruleId' | 'hash'>): str
   return `[REDACTED:dsh-dlp:${shortRuleId(span.ruleId)}:${span.hash}]`
 }
 
-/** Grow one span outward until both edges sit on whitespace or a string boundary. */
+/**
+ * Characters that end a secret. Whitespace alone is not enough: one detection
+ * inside a line of minified JSON would expand to the whole line and destroy
+ * every other field on it, so quotes and the JSON, query-string and
+ * assignment separators bound a span too.
+ */
+const SPAN_DELIMITERS = /[\s"'`=:,;&?<>(){}[\]]/
+
+/** Grow one span outward until both edges sit on a delimiter or a string boundary. */
 function expand(text: string, start: number, end: number): { start: number; end: number } {
   let left = Math.max(0, start)
   let right = Math.min(text.length, end)
-  while (left > 0 && !/\s/.test(text.charAt(left - 1))) left -= 1
-  while (right < text.length && !/\s/.test(text.charAt(right))) right += 1
+  while (left > 0 && !SPAN_DELIMITERS.test(text.charAt(left - 1))) left -= 1
+  while (right < text.length && !SPAN_DELIMITERS.test(text.charAt(right))) right += 1
   return { start: left, end: right }
 }
 
