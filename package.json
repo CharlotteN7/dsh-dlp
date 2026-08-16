@@ -3,6 +3,27 @@
   "version": "0.1.0",
   "description": "Data-loss-prevention plugin for DeepSeek Harness: a non-configurable tool guard floor, tool-result redaction, and fail-closed telemetry redaction",
   "license": "MIT",
+  "author": "Ivan Tyshchenko <nsof@protonmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CharlotteN7/dsh-dlp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CharlotteN7/dsh-dlp/issues"
+  },
+  "homepage": "https://github.com/CharlotteN7/dsh-dlp#readme",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dlp",
+    "data-loss-prevention",
+    "secret-detection",
+    "redaction",
+    "secretlint"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  },
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -17,7 +38,9 @@
   "files": [
     "lib/**/*.js",
     "lib/types/**/*.d.ts",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "LICENSE",
+    "SECURITY.md"
   ],
   "dsh": {
     "bundle": {
