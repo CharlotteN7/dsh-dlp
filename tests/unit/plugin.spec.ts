@@ -9,7 +9,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
-import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import type {
+  JsonSchemaNode,
+  PostToolDecision,
+  PreToolDecision,
+  ToolDefinition,
+  ToolExecution,
+  ToolExecutionResult,
+} from '@deepseek-ai/dsh-tools'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionTelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
 import { apply, loadOrCreateKey } from '../../src/index.ts'
@@ -30,12 +37,15 @@ interface StubContext {
   readonly guards: Guard[]
   readonly listeners: Map<string, ((...args: never[]) => unknown)[]>
   readonly errors: string[]
+  /** Definitions `ctx.tools.get` resolves; a name absent here reads as an unregistered tool. */
+  readonly definitions: Map<string, ToolDefinition>
 }
 
 function stubContext(): StubContext {
   const guards: Guard[] = []
   const listeners = new Map<string, ((...args: never[]) => unknown)[]>()
   const errors: string[] = []
+  const definitions = new Map<string, ToolDefinition>()
   const ctx = {
     on(name: string, listener: (...args: never[]) => unknown) {
       const existing = listeners.get(name) ?? []
@@ -51,10 +61,18 @@ function stubContext(): StubContext {
         guards.push(guard)
         return () => {}
       },
+      get(name: string) {
+        return definitions.get(name)
+      },
     },
     logger: { error: (message: string) => { errors.push(message) } },
   } as unknown as Context
-  return { ctx, guards, listeners, errors }
+  return { ctx, guards, listeners, errors, definitions }
+}
+
+/** A registered tool that declares nothing but the shape of its output. */
+function toolWithOutputSchema(name: string, schema: JsonSchemaNode): ToolDefinition {
+  return { name, output: { schema } } as unknown as ToolDefinition
 }
 
 let counter = 0
@@ -319,6 +337,56 @@ describe('the result-redaction registration', () => {
 
     expect(plugin.records()).toHaveLength(1)
     expect(plugin.records()[0]).toMatchObject({ spans: [], unicode: { 'dsh-dlp/unicode-zero-width': 1 } })
+  })
+
+  it('withholds a result whose placeholder the tool output schema would reject', async () => {
+    // Replacing the value re-validates it, and the registry reports a schema
+    // failure as a ToolOutputError the model cannot act on. The plugin's own
+    // message names the rule and the keyed hash instead.
+    const plugin = mount()
+    plugin.definitions.set('acme_token', toolWithOutputSchema('acme_token', {
+      type: 'object',
+      properties: { token: { type: 'string', const: SLACK } },
+      required: ['token'],
+    }))
+    const listener = plugin.listeners.get('tools/post-execute')?.[0] as (
+      exec: ToolExecution,
+      result: Readonly<ToolExecutionResult>,
+      next: () => Promise<PostToolDecision>,
+    ) => Promise<PostToolDecision>
+    const result: ToolExecutionResult = {
+      isError: false,
+      value: { token: SLACK } as never,
+      content: [{ type: 'text', text: SLACK }],
+    }
+
+    const decision = await listener(execution('acme_token', {}), result, async () => ({ kind: 'accept' }))
+
+    expect(decision.kind).toBe('block')
+    expect(JSON.stringify(decision)).toContain('dsh-dlp withheld this tool result')
+    expect(JSON.stringify(decision)).toContain('dsh-dlp/slack-token')
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+    expect(plugin.records()[0]).toMatchObject({ kind: 'result-redaction', tool: 'acme_token' })
+  })
+
+  it('replaces the value when the tool output schema accepts the placeholder', async () => {
+    const plugin = mount()
+    plugin.definitions.set('acme_token', toolWithOutputSchema('acme_token', {
+      type: 'object',
+      properties: { token: { type: 'string' } },
+      required: ['token'],
+    }))
+    const listener = plugin.listeners.get('tools/post-execute')?.[0] as (
+      exec: ToolExecution,
+      result: Readonly<ToolExecutionResult>,
+      next: () => Promise<PostToolDecision>,
+    ) => Promise<PostToolDecision>
+    const result: ToolExecutionResult = { isError: false, value: { token: SLACK } as never, content: [] }
+
+    const decision = await listener(execution('acme_token', {}), result, async () => ({ kind: 'accept' }))
+
+    expect(decision.kind).toBe('accept')
+    expect(JSON.stringify(decision)).toContain('[REDACTED:dsh-dlp:slack-token:')
   })
 
   it('records nothing for a clean result', async () => {

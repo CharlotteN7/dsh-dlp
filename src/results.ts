@@ -12,7 +12,13 @@
  */
 
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import type {
+  JsonSchemaNode,
+  PostToolDecision,
+  PreToolDecision,
+  ToolExecution,
+  ToolExecutionResult,
+} from '@deepseek-ai/dsh-tools'
 import {
   DENY_SEVERITY,
   countUnicodeIndicators,
@@ -24,6 +30,7 @@ import {
 import { isEgressCapable } from './paths.ts'
 import type { ResolvedPolicy } from './policy.ts'
 import { nestedStrings, redactContent, redactJson, type RedactedSpan, type SpanHasher } from './redaction.ts'
+import { redactionBreaksSchema } from './schema.ts'
 
 /**
  * Separator the strings of one result are rendered with before the
@@ -161,10 +168,11 @@ function withheldFeedback(spans: readonly RedactedSpan[]): ContentBlock[] {
  *   carries a secret, or a value that still scans dirty after redaction.
  *   Blocking replaces the whole result, which is the only way to drop `meta`.
  *
- * Replacing the value can fail: the placeholder is re-validated against the
- * tool's `output.schema`, and a schema that constrains the string rejects it,
- * which the registry reports as a `ToolOutputError`. A failed call is the
- * intended outcome there — see README.md.
+ * Replacing the value is re-validated by the registry against the tool's
+ * `output.schema`, and a schema that pins the redacted string rejects it. That
+ * surfaces as a `ToolOutputError` naming a validation failure, which tells the
+ * model nothing it can act on, so the schema is checked here first and the
+ * result is withheld with this plugin's own explanation instead.
  *
  * A downstream `accept{content}` over a dirty value is overruled by the value
  * arm, which discards that listener's presentation choice. Keeping it would
@@ -174,6 +182,7 @@ function withheldFeedback(spans: readonly RedactedSpan[]): ContentBlock[] {
  * @param result - the dispatch outcome the waterfall was called with.
  * @param policy - the effective policy.
  * @param hasher - mints each span's keyed hash.
+ * @param outputSchema - the executing tool's declared output schema, when one could be resolved.
  * @returns the decision to return, the spans replaced, and scan completeness.
  */
 export async function redactDecision(
@@ -181,6 +190,7 @@ export async function redactDecision(
   result: Readonly<ToolExecutionResult>,
   policy: ResolvedPolicy,
   hasher: SpanHasher,
+  outputSchema?: JsonSchemaNode,
 ): Promise<ResultRedaction> {
   if (decision.kind === 'block') {
     const prepared = await prepareScan(contentStrings(decision.feedback), policy)
@@ -212,6 +222,14 @@ export async function redactDecision(
 
   if (value !== undefined && dirty(nestedStrings(value))) {
     const redacted = redactJson(value, prepared.scan, hasher)
+    if (redactionBreaksSchema(outputSchema, value, redacted.value)) {
+      return {
+        decision: { kind: 'block', feedback: withheldFeedback(redacted.spans) },
+        spans: redacted.spans,
+        truncatedScan: prepared.truncated,
+        indicators: prepared.indicators,
+      }
+    }
     const remaining = nestedStrings(redacted.value)
     const residual = await prepareScan(remaining, policy)
     if (remaining.some(text => residual.scan(text).length > 0)) {

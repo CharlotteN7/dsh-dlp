@@ -123,9 +123,10 @@ drops `meta`. The model gets an error naming the rule and the keyed hash.
 
 Two costs, both recorded rather than papered over:
 
-- Replacing a value re-validates it against `output.schema`, so a schema constraining that
-  string turns a redaction into a `ToolOutputError`. A failed call is the intended outcome; the
-  alternative is writing the secret to the log.
+- Replacing a value re-validates it against `output.schema`, so a schema pinning that string
+  would turn a redaction into a `ToolOutputError`. The listener resolves the live definition
+  through `ctx.tools.get(name, exec.agent)` and asks first, then blocks with its own message;
+  see §14. The call still fails, because the alternative is writing the secret to the log.
 - Blocking discards a result the user may have wanted. It happens only where the alternative is
   a durable leak.
 
@@ -367,3 +368,27 @@ cap unstripped and unreported.
 UTS #39 confusables are not attempted. A homoglyph is a visible, legitimately-encoded
 character, detecting it needs a data table, and it defeats every rule in this package. README
 says so instead of implying coverage.
+
+## 14. The output schema is checked before a redacted value is handed back
+
+`ctx.tools.get(name, scope)` returns the live `ToolDefinition`, and `exec.agent` is the scope
+key, so `output.schema` is readable from the `tools/post-execute` listener. A schema that pins
+the redacted string rejects the placeholder on re-validation, and the registry reports that as
+a `ToolOutputError` listing validation violations — an opaque failure for something the plugin
+chose to do. Asking first turns it into the same `block` a result that cannot be cleaned
+already gets, with the rule id and the keyed hash in the message.
+
+The check re-implements the harness's own validation instead of calling it. Every harness type
+this package uses is imported with `import type`, so nothing from `@deepseek-ai/dsh-*` is
+emitted as a runtime import; a plugin installed under `$DSH_HOME/profiles/<name>/node_modules`
+cannot resolve those packages from there, and the E2E harness deliberately does not copy them
+(§11). Importing `validateJsonSchemaValue` would make the plugin fail to load. The enforced
+subset is small — `type`, `oneOf`, `properties`, `required`, `additionalProperties`, `items`,
+`enum`, `const`, with no `pattern`, `minLength` or `format` — which is what makes a second
+implementation reasonable rather than a fork.
+
+It is guarded against being wrong in the direction that costs the user a result: the *original*
+value is validated first, and a schema this module rejects before redaction is one it does not
+model, so it abstains and the registry decides exactly as it did before. Verified against the
+real `read` tool's compiled schema: the original validates, so the check is live rather than
+abstaining, and the placeholder passes.

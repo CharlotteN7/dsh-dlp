@@ -201,7 +201,11 @@ export function apply(ctx: Context, config: Config): void {
       result: Readonly<ToolExecutionResult>,
       next: () => Promise<PostToolDecision>,
     ) => {
-      const redacted = await redactDecision(await next(), result, policy, hasher)
+      // The live definition, so a schema the deployment's own tool declares is
+      // read from the registry rather than assumed. `exec.agent` is the scope
+      // key: a scoped tool shadows a global one of the same name.
+      const outputSchema = ctx.tools.get(exec.name, exec.agent)?.output.schema
+      const redacted = await redactDecision(await next(), result, policy, hasher, outputSchema)
       const indicators = Object.keys(redacted.indicators).length > 0
         ? { unicode: redacted.indicators }
         : {}

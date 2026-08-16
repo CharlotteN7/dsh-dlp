@@ -242,10 +242,13 @@ is the only decision that replaces the whole result, so it is the only way to dr
 
 Two consequences worth knowing:
 
-- Replacing a value re-validates it against the tool's `output.schema`. A schema that
-  constrains that string (a length, a pattern, an enum) rejects the placeholder and the call
-  fails with a `ToolOutputError`. A failed call is the intended outcome; the alternative is
-  writing the secret to the log.
+- Replacing a value re-validates it against the tool's `output.schema`, and a schema that pins
+  that string — an `enum`, a `const`, a `oneOf` branch it selects — would reject the
+  placeholder. The plugin asks that question first and withholds the result with the message
+  above, rather than letting the registry raise a `ToolOutputError` that names a validation
+  failure and tells the model nothing it can act on. The call still fails; it fails
+  comprehensibly. Where the plugin cannot answer the question — no schema resolved, or a
+  schema whose own value it cannot validate — the registry decides as before.
 - Redaction is per-detection, and each span grows to the nearest delimiter — whitespace,
   quotes, `=`, `:`, `,`, brackets. A line of minified JSON loses the field that matched, not
   the whole line.
