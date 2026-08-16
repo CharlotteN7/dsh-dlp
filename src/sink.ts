@@ -39,6 +39,7 @@ export const RECORD_VERSION = 1
 export type AuditKind =
   | 'guard-deny'
   | 'pre-execute-deny'
+  | 'execution-mutation'
   | 'result-redaction'
   | 'telemetry-redaction'
   | 'assistant-image-neutralized'
@@ -77,6 +78,10 @@ export interface AuditRecord {
   readonly unicode?: Readonly<Record<string, number>>
   /** Telemetry record channel, for `telemetry-redaction`. */
   readonly channel?: string
+  /** Fields another plugin rewrote after the call was logged, for `execution-mutation`. */
+  readonly mutatedFields?: readonly string[]
+  /** Tool name the session log recorded, when a rewrite changed it. */
+  readonly originalTool?: string
   /**
    * Hostname of a neutralised remote image destination, for
    * `assistant-image-neutralized`. The hostname only: a path and a query

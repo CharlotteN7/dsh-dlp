@@ -17,10 +17,11 @@
  * 5. `llm/stream` — neutralising remote markdown image destinations in
  *    assistant output, before the text becomes a session event.
  *
- * The `llm/stream` registration mitigates a defect in the harness rather than
- * in a deployment's own configuration: the missing Content-Security-Policy
- * behind (5). It is partial, it does not close its channel, and README.md says
- * so beside the feature.
+ * Two of those registrations mitigate defects in the harness rather than in a
+ * deployment's own configuration: the missing Content-Security-Policy behind
+ * (5), and the mutable execution object behind the guard's mutation check.
+ * Both are partial, neither closes its channel, and README.md says so beside
+ * the feature.
  *
  * This plugin is not a containment boundary. It runs in-process at the agent's
  * own uid; anything the agent can execute can read the same files the guard
@@ -39,6 +40,7 @@ import { loadRepoPolicy, resolvePolicy, type Config, type RepoPolicy } from './p
 import { SpanHasher } from './redaction.ts'
 import { safeEvaluateGuard } from './guard.ts'
 import { neutralizeImageStream } from './images.ts'
+import { ExecutionSnapshots, mutationReason } from './mutation.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
 import { redactRecord } from './telemetry.ts'
 import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from './sink.ts'
@@ -160,6 +162,8 @@ export function apply(ctx: Context, config: Config): void {
     }
   }
 
+  const snapshots = new ExecutionSnapshots(hasher)
+
   ctx.on('session/event', (_session: Session, event: SessionEvent) => {
     if (event.type === 'tool/call') {
       correlator.note(event.data.callId, { turn: event.data.turn, step: event.data.step })
@@ -170,9 +174,33 @@ export function apply(ctx: Context, config: Config): void {
     }
   })
 
+  // Snapshot each call before the rest of the waterfall can rewrite it. The
+  // prepend is best-effort by construction: a listener registered later with
+  // the same option runs ahead of this one.
+  ctx.on('tools/pre-execute', (exec: ToolExecution, next: () => Promise<PreToolDecision>) => {
+    snapshots.record(exec)
+    return next()
+  }, { prepend: true })
+
   // The floor. Registered on a plain context so it applies globally: to every
   // agent, every `run_code` inner sub-call, and every subagent child.
   ctx.effect(() => ctx.tools.guard((exec) => {
+    // Integrity first: a call whose name or arguments changed after `tool/call`
+    // was appended is denied whatever the policy tables say about it, because
+    // the log no longer describes what would run.
+    const mutation = snapshots.detect(exec)
+    if (mutation !== undefined) {
+      sink.write({
+        v: RECORD_VERSION,
+        time: new Date().toISOString(),
+        kind: 'execution-mutation',
+        decisionId: newDecisionId(),
+        ...identity(exec),
+        mutatedFields: mutation.fields,
+        ...mutation.fields.includes('name') ? { originalTool: mutation.originalTool } : {},
+      })
+      return mutationReason(exec, mutation)
+    }
     const verdict = safeEvaluateGuard(exec, policy, hasher)
     if (verdict === undefined) return undefined
     sink.write({

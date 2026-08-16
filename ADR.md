@@ -436,3 +436,36 @@ Raw HTML needed no handling: the renderer emits it as literal text (`render.tsx:
 upstream's own fixture pins that (`tests/fixtures/markdown-dom/raw-html-dropped.settled.txt`).
 Reasoning text needed none either — the UI renders it as plain text through `ReasoningRow`, not
 through `MarkdownText`.
+
+## 16. Tool-call mutation is detected in the guard, and deliberately not prevented
+
+Finding 002: `exec.arguments` is deep-frozen at mint (`packages/core/tools/src/index.ts:1416`)
+but the execution object is frozen only at `notifyResult` (`:1660`), so a `tools/pre-execute`
+listener can reassign `exec.name` — changing which body runs — after `tool/call` was appended
+from the model's own response block (`packages/core/agent-loop/src/tool-calls.ts:167`).
+
+**Snapshot early, compare in the guard.** The guard is the only stage that runs after the whole
+waterfall and cannot be out-ordered, and `guardReason(exec)` receives the same object identity
+(`packages/core/tools/src/index.ts:1487`), so a `WeakMap` keyed on it — the way the registry
+keys its own per-execution state — carries the snapshot across the two stages. The comparison
+is synchronous because `ToolGuard` is, which is why the argument comparison is a keyed digest
+of a canonical JSON rendering rather than a structural walk.
+
+**Detection, not prevention.** Preventing the rewrite means freezing an object this plugin does
+not own, and a blanket freeze is wrong for the same reason upstream's own remediation note
+says it is: `dispatchScheduledExecution` deliberately replaces `exec.signal`. So the mutation
+still happens; what changes is that the call does not run and the operator finds out.
+
+**Three deliberate abstentions.** A call with no snapshot is not a finding — absence means this
+listener never saw the call, and denying on absence would deny traffic we did not observe. A
+`deny` or `ask` from another listener is not a finding either: a deny skips the guard entirely,
+and an approved ask reaches the guard with an unchanged object. And the snapshot's
+`{ prepend: true }` is best-effort by construction, because a later registration with the same
+option runs ahead of it; README states that rather than implying a floor.
+
+Not configurable, like the rest of the floor: a deployment that wants the mutation allowed is
+asking for a session log that does not describe what ran.
+
+**The upstream fix is better** — `Object.defineProperty(execution, 'name', { writable: false })`
+at the mint site, or a scheduler-invariant throw naming the plugin. Either fails at the source
+instead of denying downstream of it.

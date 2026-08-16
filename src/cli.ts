@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { defaultAuditLog } from './home.ts'
 
 /** Decision kinds that stopped a call, as opposed to rewriting its result. */
-const DENYING_KINDS: ReadonlySet<string> = new Set(['guard-deny', 'pre-execute-deny'])
+const DENYING_KINDS: ReadonlySet<string> = new Set(['guard-deny', 'pre-execute-deny', 'execution-mutation'])
 
 /** How many decisions the report lists individually. */
 const RECENT_LIMIT = 10

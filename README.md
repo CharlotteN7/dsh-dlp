@@ -15,10 +15,10 @@ It does six things:
 4. **Strips the invisible characters that carry hidden instructions** out of tool results —
    the Tags block and bidi overrides — and counts the classes it will not touch because they
    also appear in legitimate text.
-5. **Neutralises remote markdown images in assistant output** — a partial mitigation for a
-   defect in the harness rather than in your configuration
-   ([see below](#mitigations-for-defects-in-the-harness-itself)), including what it does not
-   close.
+5. **Neutralises remote markdown images in assistant output**, and detects a tool call another
+   plugin rewrote after the session log recorded it. Both are partial mitigations for defects
+   in the harness rather than in your configuration —
+   [see below](#mitigations-for-defects-in-the-harness-itself), including what they do not close.
 6. **Writes an audit record for every decision** to its own sink — rule id, rule version,
    offsets, and a keyed hash. Never the secret, and never the path or command that matched.
    `dsh-dlp report` reads that sink back.
@@ -100,10 +100,11 @@ More limits worth stating up front:
 
 ## Mitigations for defects in the harness itself
 
-One of this plugin's registrations works around a defect in DeepSeek Harness, not in a
-deployment's configuration. **It does not close its channel**, an upstream fix is better, and
-it is written up in `../disclosures/findings/`. It is here because we build on this seam today
-and wanted the accident case narrowed while the upstream question is open.
+Three of this plugin's registrations work around defects in DeepSeek Harness, not in a
+deployment's configuration. **None of them closes its channel**, an upstream fix is better in
+all three cases, and each is written up in `../disclosures/findings/`. They are here because we
+build on these seams today and wanted the accident case narrowed while the upstream question is
+open.
 
 ### Remote markdown images in assistant output (finding 001)
 
@@ -147,6 +148,43 @@ What it does not close:
 - **The upstream fix is one `img-src` directive** in a Content-Security-Policy. That covers
   every form, every client, and every channel of this shape at once. This plugin's version
   covers the common syntax on one seam. Prefer the directive.
+
+### A tool call rewritten between `tools/pre-execute` and the guard (finding 002)
+
+The registry deep-freezes `exec.arguments` but does not freeze the execution object until
+results are notified. A `tools/pre-execute` listener can therefore reassign `exec.arguments` or
+`exec.name` — and reassigning `exec.name` **changes which tool body runs** — while the agent
+loop appended `tool/call` from the model's own response block *before* the waterfall ran. The
+durable record then describes a call that never happened, and nothing warns anyone.
+
+This plugin snapshots each call's name and a keyed digest of its arguments at the head of the
+waterfall, and compares in the guard, which runs after the whole waterfall. A mismatch is
+**denied**, with an audit record naming which field changed and, when the name changed, the tool
+the log recorded:
+
+```
+dsh-dlp denied "dangerous": another mounted plugin rewrote this call's name after the session
+log recorded it, so the log and the presented call describe something other than what would
+have run. The session log records a call to "safe". ...
+```
+
+What it does not close:
+
+- **It detects; it does not prevent.** Preventing the rewrite means freezing an object this
+  plugin does not own, which would break `tools/execute` wrappers that legitimately replace
+  `exec.signal`. The tool body does not run, but the mutation still happened.
+- **The snapshot is best-effort, not a floor.** It is registered with `{ prepend: true }`, so it
+  runs before listeners registered earlier — but a listener registered *later* with the same
+  option runs ahead of it and would be snapshotted after its own rewrite.
+- **A call this plugin never saw is never a finding.** Absence of a snapshot means abstain, so
+  scoped dispatches this listener does not receive pass unremarked rather than being denied.
+- **It says nothing about other plugins' decisions.** A `deny` or an `ask` from another
+  `tools/pre-execute` listener is ordinary traffic; a deny also skips the guard entirely, so
+  nothing here is even consulted.
+- **The upstream fix is better**: two `Object.defineProperty(execution, …, { writable: false })`
+  calls at the mint site, or a scheduler-invariant throw naming the offending plugin. Either
+  makes the rewrite impossible or fatal at the source instead of denying a call downstream of
+  it. This check is not configurable, for the same reason the rest of the floor is not.
 
 ---
 
