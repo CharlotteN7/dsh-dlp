@@ -25,12 +25,12 @@ import type { ResolvedPolicy } from './policy.ts'
 import { nestedStrings, redactContent, redactJson, type RedactedSpan, type SpanHasher } from './redaction.ts'
 
 /**
- * Tier-2 scans allowed per tool result. Beyond it, remaining strings are
- * scanned by tier 1 only and the audit record is marked `truncatedScan`. A
- * `read` of a large file arrives as thousands of separate line strings, and
- * one `lintSource` call each would leave the hot path.
+ * Separator the strings of one result are rendered with before the
+ * cross-string scan. A newline is what the reader of a tool result sees
+ * between two lines of a file, and it keeps every `\b` and `^` anchor a
+ * per-string scan would have honoured.
  */
-const SECRETLINT_STRING_BUDGET = 128
+const RENDER_SEPARATOR = '\n'
 
 /** A scan function over already-scanned strings, plus how complete the scan was. */
 interface PreparedScan {
@@ -41,24 +41,49 @@ interface PreparedScan {
 /**
  * Scan a set of strings once and hand back a synchronous lookup, so the
  * redaction walkers stay synchronous while detection stays async.
- * @param strings - every string that will be redacted.
+ *
+ * The strings are scanned twice over: each on its own by tier 1, and all of
+ * them joined by both tiers. The joined pass is what finds a secret split
+ * across strings — a PEM block arriving as one `lines[i].text` per line, a
+ * token spanning two content blocks — which no per-string walk can see; its
+ * offsets are then mapped back onto the individual strings, because that is
+ * what the redaction walkers splice.
+ *
+ * Tier 2 runs once, over the joined text, and is budgeted by characters
+ * through `maxScanBytes`. One `lintSource` call per string would multiply a
+ * fixed per-call cost by however many pieces the tool happened to split its
+ * output into, and a budget counted in strings would make how much of a result
+ * is scanned depend on the same accident.
+ * @param strings - every string that will be redacted, in render order.
  * @param policy - the effective policy.
- * @returns a memoized lookup and whether any string fell back to tier 1 only.
+ * @returns a memoized lookup and whether tier 2 saw less than the whole rendering.
  */
 async function prepareScan(strings: readonly string[], policy: ResolvedPolicy): Promise<PreparedScan> {
-  const memo = new Map<string, readonly Detection[]>()
-  let budget = SECRETLINT_STRING_BUDGET
-  let truncated = false
-  for (const text of new Set(strings)) {
-    if (budget > 0) {
-      budget -= 1
-      const result = await scanAll(text, policy.syncRules, policy.maxScanBytes)
-      truncated ||= result.truncated
-      memo.set(text, result.detections)
-      continue
+  const rendered = strings.join(RENDER_SEPARATOR)
+  const { detections, truncated } = await scanAll(rendered, policy.syncRules, policy.maxScanBytes)
+  const memo = new Map<string, Detection[]>()
+  const found = (text: string): Detection[] => {
+    const existing = memo.get(text)
+    if (existing !== undefined) return existing
+    const created = [...scanSync(text, policy.syncRules).detections]
+    memo.set(text, created)
+    return created
+  }
+
+  let offset = 0
+  for (const text of strings) {
+    const start = offset
+    const end = start + text.length
+    offset = end + RENDER_SEPARATOR.length
+    const local = found(text)
+    for (const detection of detections) {
+      if (detection.end <= start || detection.start >= end) continue
+      local.push({
+        ...detection,
+        start: Math.max(0, detection.start - start),
+        end: Math.min(text.length, detection.end - start),
+      })
     }
-    truncated = true
-    memo.set(text, scanSync(text, policy.syncRules, policy.maxScanBytes).detections)
   }
   /* v8 ignore next -- every string handed to the walkers was collected for this memo. */
   return { scan: text => memo.get(text) ?? [], truncated }
@@ -69,6 +94,26 @@ function contentStrings(blocks: readonly ContentBlock[]): string[] {
   return blocks.flatMap(block => block.type === 'text' ? [block.text] : [])
 }
 
+/**
+ * Strings the harness keeps in the durable result when the decision does not
+ * replace the canonical value.
+ *
+ * `tools/post-execute` returning `accept{content}` leaves `{...result}` in
+ * place, so both `value` and the `presentationMeta()` projection reach
+ * `session.append('tool/result', ...)` exactly as the tool produced them. They
+ * are never model-visible and therefore never redacted by a content
+ * replacement — which is why a content arm is not an option for a dirty
+ * success.
+ * @param result - the dispatch outcome the waterfall was called with.
+ * @returns every string that would be persisted verbatim.
+ */
+function persistedStrings(result: Readonly<ToolExecutionResult>): string[] {
+  return [
+    ...result.isError ? [] : nestedStrings(result.value),
+    ...result.meta === undefined ? [] : nestedStrings(result.meta),
+  ]
+}
+
 /** What a redaction pass produced, before an arm is chosen. */
 export interface ResultRedaction {
   readonly decision: PostToolDecision
@@ -76,21 +121,45 @@ export interface ResultRedaction {
   readonly truncatedScan: boolean
 }
 
+/** Feedback for a result this plugin refuses to let through in any arm. */
+function withheldFeedback(spans: readonly RedactedSpan[]): ContentBlock[] {
+  const rules = [...new Set(spans.map(span => span.ruleId))].join(', ')
+  const hashes = [...new Set(spans.map(span => span.hash))].join(', ')
+  return [{
+    type: 'text',
+    text: 'dsh-dlp withheld this tool result: it carries credential material '
+      + `(rule ${rules}, keyed hash ${hashes}) in a part of the result that cannot be rewritten without `
+      + 'discarding it. Do not retry the same call. Ask the user for the value you need, or work from a source '
+      + 'that is not a credential store.',
+  }]
+}
+
 /**
  * Redact whatever the downstream decision settled on.
  *
- * Arm selection follows what the seam can carry, not preference:
- * `accept{value}` re-validates `output.schema`, re-runs `output.render()` and
- * re-derives `presentationMeta()`, so one replacement redacts the canonical
- * value, the model-facing content and the persisted meta together. It throws
- * on a failed result, so failures — where a leaked token most often hides, in
- * an error message quoting the command — take `accept{content}`. The docs are
- * explicit that content replacement is presentation policy, not
- * confidentiality policy: on that arm the canonical value keeps the original
- * text.
+ * Arm selection follows what each arm can actually clean:
  *
- * The two `accept` arms are mutually exclusive at runtime (`Object.hasOwn`
- * check throws a `TypeError`), so exactly one is ever populated.
+ * - `accept{value}` re-validates `output.schema`, re-runs `output.render()`
+ *   and re-derives `presentationMeta()`, so one replacement redacts the
+ *   canonical value, the model-facing content and the persisted meta together.
+ *   It is the only arm that keeps a secret out of the durable log, so every
+ *   successful result with anything to redact takes it.
+ * - `accept{content}` replaces presentation only. It is used when the
+ *   persisted surfaces are already clean — a failed result, which has no
+ *   value, or a success whose secret exists only in the rendered content.
+ * - `block` is the fallback when neither works: a failed result whose `meta`
+ *   carries a secret, or a value that still scans dirty after redaction.
+ *   Blocking replaces the whole result, which is the only way to drop `meta`.
+ *
+ * Replacing the value can fail: the placeholder is re-validated against the
+ * tool's `output.schema`, and a schema that constrains the string rejects it,
+ * which the registry reports as a `ToolOutputError`. A failed call is the
+ * intended outcome there — see README.md.
+ *
+ * A downstream `accept{content}` over a dirty value is overruled by the value
+ * arm, which discards that listener's presentation choice. Keeping it would
+ * put the value in the session log; the harness re-renders from the redacted
+ * value instead.
  * @param decision - what the rest of the waterfall returned.
  * @param result - the dispatch outcome the waterfall was called with.
  * @param policy - the effective policy.
@@ -119,54 +188,55 @@ export async function redactDecision(
     ? {}
     : { additionalContexts: decision.additionalContexts }
 
-  if (replacedValue !== undefined) {
-    const prepared = await prepareScan(nestedStrings(replacedValue), policy)
-    const redacted = redactJson(replacedValue, prepared.scan, hasher)
-    return {
-      decision: redacted.changed ? { kind: 'accept', value: redacted.value, ...contexts } : decision,
-      spans: redacted.spans,
-      truncatedScan: prepared.truncated,
-    }
-  }
+  // The value the harness will persist: a downstream replacement when there is
+  // one, otherwise the tool's own. A failed result has no value at all.
+  const value = replacedValue ?? (result.isError ? undefined : result.value)
+  const visible = contentStrings(replacedContent ?? result.content)
+  const persisted = replacedValue === undefined
+    ? persistedStrings(result)
+    : [...nestedStrings(replacedValue), ...result.meta === undefined ? [] : nestedStrings(result.meta)]
 
-  if (replacedContent !== undefined) {
-    const prepared = await prepareScan(contentStrings(replacedContent), policy)
-    const redacted = redactContent(replacedContent, prepared.scan, hasher)
-    return {
-      decision: redacted.changed ? { kind: 'accept', content: redacted.content, ...contexts } : decision,
-      spans: redacted.spans,
-      truncatedScan: prepared.truncated,
-    }
-  }
+  const prepared = await prepareScan([...persisted, ...visible], policy)
+  const dirty = (strings: readonly string[]): boolean => strings.some(text => prepared.scan(text).length > 0)
 
-  // A bare accept: the original dispatch outcome is what reaches the model.
-  const value = result.isError ? undefined : result.value
-  const probeText = `${value === undefined ? '' : JSON.stringify(value)}\n${contentStrings(result.content).join('\n')}`
-  const probe = await scanAll(probeText, policy.syncRules, policy.maxScanBytes)
-  if (probe.detections.length === 0) {
-    return { decision, spans: [], truncatedScan: probe.truncated }
-  }
-
-  if (value !== undefined) {
-    const prepared = await prepareScan(nestedStrings(value), policy)
+  if (value !== undefined && dirty(nestedStrings(value))) {
     const redacted = redactJson(value, prepared.scan, hasher)
-    if (redacted.changed) {
+    const remaining = nestedStrings(redacted.value)
+    const residual = await prepareScan(remaining, policy)
+    if (remaining.some(text => residual.scan(text).length > 0)) {
       return {
-        decision: { kind: 'accept', value: redacted.value, ...contexts },
+        decision: { kind: 'block', feedback: withheldFeedback(redacted.spans) },
         spans: redacted.spans,
-        truncatedScan: prepared.truncated || probe.truncated,
+        truncatedScan: prepared.truncated || residual.truncated,
       }
     }
+    return {
+      decision: { kind: 'accept', value: redacted.value, ...contexts },
+      spans: redacted.spans,
+      truncatedScan: prepared.truncated,
+    }
   }
 
-  // Either a failed result, or a probe hit that no individual string reproduces
-  // (a secret split across two fields shows up only in the rendered text).
-  const prepared = await prepareScan(contentStrings(result.content), policy)
-  const redacted = redactContent(result.content, prepared.scan, hasher)
+  // The value is clean, so the durable result is clean unless `meta` — which
+  // no accept arm can rewrite — carries something of its own.
+  if (result.meta !== undefined && dirty(nestedStrings(result.meta))) {
+    const spans = redactJson(result.meta, prepared.scan, hasher).spans
+    return {
+      decision: { kind: 'block', feedback: withheldFeedback(spans) },
+      spans,
+      truncatedScan: prepared.truncated,
+    }
+  }
+
+  const blocks = replacedContent ?? result.content
+  const redacted = redactContent(blocks, prepared.scan, hasher)
+  if (!redacted.changed) {
+    return { decision, spans: [], truncatedScan: prepared.truncated }
+  }
   return {
-    decision: redacted.changed ? { kind: 'accept', content: redacted.content, ...contexts } : decision,
+    decision: { kind: 'accept', content: redacted.content, ...contexts },
     spans: redacted.spans,
-    truncatedScan: prepared.truncated || probe.truncated,
+    truncatedScan: prepared.truncated,
   }
 }
 
@@ -178,31 +248,29 @@ export async function redactDecision(
  * @param exec - the pending call.
  * @param policy - the effective policy.
  * @param hasher - mints the keyed hashes quoted in a denial reason.
- * @returns the denial reason and its rule ids, or `undefined` to leave the call allowed.
+ * @returns the denial reason and its spans, or `undefined` to leave the call allowed.
  */
 export async function evaluateBreadthTier(
   exec: Pick<ToolExecution, 'name' | 'arguments'>,
   policy: ResolvedPolicy,
   hasher: SpanHasher,
-): Promise<{ reason: string; ruleIds: readonly string[]; hashes: readonly string[] } | undefined> {
+): Promise<{ reason: string; spans: readonly RedactedSpan[] } | undefined> {
   if (!isEgressCapable(exec.name, policy.extraEgressTools)) return undefined
-  const ruleIds: string[] = []
-  const hashes: string[] = []
+  const spans: RedactedSpan[] = []
   for (const text of new Set(nestedStrings(exec.arguments))) {
     const { detections } = await scanAll(text, policy.syncRules, policy.maxScanBytes)
     for (const detection of detections) {
       if (severityRank(detection.severity) < severityRank(DENY_SEVERITY)) continue
-      ruleIds.push(detection.ruleId)
-      hashes.push(hasher.hash(text.slice(detection.start, detection.end)))
+      spans.push({ ...detection, hash: hasher.hash(text.slice(detection.start, detection.end)) })
     }
   }
-  if (ruleIds.length === 0) return undefined
-  const unique = [...new Set(ruleIds)]
+  if (spans.length === 0) return undefined
+  const ruleIds = [...new Set(spans.map(span => span.ruleId))]
   return {
     reason: `dsh-dlp denied ${JSON.stringify(exec.name)}: its arguments contain credential material matching `
-      + `${unique.join(', ')} (keyed hash ${hashes.join(', ')}). Remove the credential from the call.`,
-    ruleIds: unique,
-    hashes,
+      + `${ruleIds.join(', ')} (keyed hash ${spans.map(span => span.hash).join(', ')}). `
+      + 'Remove the credential from the call.',
+    spans,
   }
 }
 

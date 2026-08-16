@@ -10,8 +10,17 @@ import { breadthTierDenial, evaluateBreadthTier, redactDecision } from '../../sr
 import { resolvePolicy, type Config } from '../../src/policy.ts'
 import { SpanHasher } from '../../src/redaction.ts'
 
+/** Shaped like a Slack bot token; invented for this test, never a live credential. */
 const SLACK = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
+/** Shaped like a Shopify access token; invented for this test, never a live credential. */
 const SHOPIFY = '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'
+/** A PEM block with an invented body; the header and footer are what the rule matches. */
+const PEM_LINES = [
+  '-----BEGIN RSA PRIVATE KEY-----',
+  'MIIEowIBAAKCAQEAtESTKEYLINEONE0000000000000000000000000000000000',
+  'MIIEowIBAAKCAQEAtESTKEYLINETWO1111111111111111111111111111111111',
+  '-----END RSA PRIVATE KEY-----',
+]
 const hasher = new SpanHasher(Buffer.from('dsh-dlp-unit-test-key-000000000000', 'utf8'))
 const policy = resolvePolicy({
   auditLog: '/dev/null',
@@ -107,6 +116,21 @@ describe('composing with the rest of the waterfall', () => {
     expect(JSON.stringify(decision)).not.toContain(SLACK)
   })
 
+  it('scans the result meta alongside a downstream value replacement', async () => {
+    const downstream: PostToolDecision = { kind: 'accept', value: { note: 'fine' } }
+    const result: ToolExecutionResult = {
+      isError: false,
+      value: {} as never,
+      content: [],
+      meta: { note: SLACK } as never,
+    }
+
+    const { decision, spans } = await redactDecision(downstream, result, policy, hasher)
+
+    expect(decision.kind).toBe('block')
+    expect(spans[0]?.ruleId).toBe('dsh-dlp/slack-token')
+  })
+
   it('redacts a downstream content replacement in place', async () => {
     const downstream: PostToolDecision = { kind: 'accept', content: [{ type: 'text', text: SLACK }] }
 
@@ -171,7 +195,7 @@ describe('the breadth tier', () => {
   it('reports a secret bound for an egress-capable tool', async () => {
     const finding = await evaluateBreadthTier({ name: 'web_fetch', arguments: { url: `https://x/?k=${SHOPIFY}` } }, policy, hasher)
 
-    expect(finding?.ruleIds).toContain('@secretlint/secretlint-rule-shopify')
+    expect(finding?.spans.map(span => span.ruleId)).toContain('@secretlint/secretlint-rule-shopify')
     expect(finding?.reason).not.toContain(SHOPIFY)
   })
 
@@ -191,9 +215,9 @@ describe('the breadth tier', () => {
 })
 
 describe('a secret that only the assembled result reveals', () => {
-  it('leaves the value alone when no single field reproduces the match', async () => {
-    // The private-key block spans three fields; the probe sees it in the
-    // serialized form, and no individual string carries it.
+  it('is redacted out of the value, which no per-string walk would have reached', async () => {
+    // The private-key block spans three fields. Every one of them scans clean
+    // on its own; only the rendered result carries the match.
     const value = {
       begin: '-----BEGIN RSA PRIVATE KEY-----',
       body: 'MIIEowIBAAKCAQEA',
@@ -202,8 +226,112 @@ describe('a secret that only the assembled result reveals', () => {
 
     const { decision, spans } = await redactDecision(accept, success(value, ''), policy, hasher)
 
-    expect(decision).toBe(accept)
-    expect(spans).toEqual([])
+    expect(Object.hasOwn(decision, 'value')).toBe(true)
+    expect(JSON.stringify(decision)).not.toContain('MIIEowIBAAKCAQEA')
+    expect(spans.map(span => span.ruleId)).toContain('dsh-dlp/private-key-block')
+  })
+
+  it('takes the value arm for a multi-line secret arriving one line per field', async () => {
+    // `read` hands back one string per line and renders the file whole. Before
+    // this, the per-string walk found nothing, the content arm won, and
+    // `{...result}` carried the untouched value and presentationMeta into the
+    // durable log while the model saw a placeholder.
+    const value = { lines: PEM_LINES.map((text, index) => ({ line: index + 1, text })) }
+    const rendered = PEM_LINES.join('\n')
+    const result: ToolExecutionResult = {
+      isError: false,
+      value: value as never,
+      content: [{ type: 'text', text: rendered }],
+      meta: { text: rendered } as never,
+    }
+
+    const { decision } = await redactDecision(accept, result, policy, hasher)
+
+    expect(Object.hasOwn(decision, 'value')).toBe(true)
+    expect(Object.hasOwn(decision, 'content')).toBe(false)
+    expect(JSON.stringify(decision)).not.toContain('MIIEowIBAAKCAQEAtESTKEYLINETWO')
+  })
+
+  it('reports every occurrence of a repeated line, not only the first', async () => {
+    const value = { lines: [`token ${SLACK}`, 'unrelated', `token ${SLACK}`] }
+
+    const { decision } = await redactDecision(accept, success(value, ''), policy, hasher)
+
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+  })
+})
+
+describe('a result whose meta carries a secret', () => {
+  it('is withheld entirely, because no accept arm can rewrite meta', async () => {
+    // `meta` is persisted verbatim by `session.append('tool/result', ...)` and
+    // is not model-visible, so a content replacement cannot clean it.
+    const result: ToolExecutionResult = {
+      isError: true,
+      error: { message: 'boom' },
+      content: [{ type: 'text', text: 'command failed' }],
+      meta: { diffs: [{ path: 'a.env', oldText: '', newText: `SLACK=${SLACK}` }] } as never,
+    }
+
+    const { decision, spans } = await redactDecision(accept, result, policy, hasher)
+
+    expect(decision.kind).toBe('block')
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+    expect(spans[0]?.ruleId).toBe('dsh-dlp/slack-token')
+  })
+
+  it('is accepted through the value arm when the value carries the same secret', async () => {
+    const result: ToolExecutionResult = {
+      isError: false,
+      value: { text: `token ${SLACK}` } as never,
+      content: [{ type: 'text', text: `token ${SLACK}` }],
+      meta: { text: `token ${SLACK}` } as never,
+    }
+
+    const { decision } = await redactDecision(accept, result, policy, hasher)
+
+    expect(Object.hasOwn(decision, 'value')).toBe(true)
+  })
+
+  it('is left alone when neither the value nor the meta carries anything', async () => {
+    const result: ToolExecutionResult = {
+      isError: false,
+      value: { text: 'fine' } as never,
+      content: [{ type: 'text', text: 'fine' }],
+      meta: { text: 'fine' } as never,
+    }
+
+    expect((await redactDecision(accept, result, policy, hasher)).decision).toBe(accept)
+  })
+})
+
+describe('a value that cannot be cleaned', () => {
+  it('is withheld rather than accepted with the secret still in it', async () => {
+    // A rule matching the placeholder itself: redaction cannot converge, so
+    // blocking is the only arm that keeps the value out of the session log.
+    const stubborn = resolvePolicy({
+      auditLog: '/dev/null',
+      redactionKeyFile: '/dev/null',
+      maxScanBytes: 1024 * 1024,
+      breadthTier: true,
+      resultRedaction: true,
+      telemetryRedaction: true,
+      redactTelemetryWorkspacePaths: true,
+    } satisfies Config)
+    const rules = [
+      ...stubborn.syncRules,
+      { id: 'test/always', version: 1, severity: 'critical' as const, pattern: /REDACTED|ALWAYS/g },
+    ]
+
+    const { decision, spans } = await redactDecision(
+      accept,
+      success({ text: 'ALWAYS' }, 'ALWAYS'),
+      { ...stubborn, syncRules: rules },
+      hasher,
+    )
+
+    expect(decision.kind).toBe('block')
+    expect(JSON.stringify(decision)).toContain('withheld')
+    expect(spans[0]?.ruleId).toBe('test/always')
   })
 })
 
@@ -219,15 +347,44 @@ describe('the breadth tier and severity', () => {
   })
 })
 
-describe('a result with more strings than the tier-2 budget', () => {
-  it('falls back to the synchronous tier and says the scan was partial', async () => {
+describe('a result larger than the tier-2 budget', () => {
+  it('is scanned by tier 1 throughout and reports the partial scan', async () => {
+    // How many strings a tool split its output into must not decide how much
+    // of it is examined: the budget is characters of rendered result.
+    const capped = resolvePolicy({
+      auditLog: '/dev/null',
+      redactionKeyFile: '/dev/null',
+      maxScanBytes: 1000,
+      breadthTier: true,
+      resultRedaction: true,
+      telemetryRedaction: true,
+      redactTelemetryWorkspacePaths: true,
+    } satisfies Config)
     const lines = Array.from({ length: 400 }, (_, index) => `line ${index}`)
     lines[399] = `token ${SLACK}`
     const result = success({ lines }, lines.join('\n'))
 
-    const { decision, truncatedScan } = await redactDecision(accept, result, policy, hasher)
+    const { decision, truncatedScan } = await redactDecision(accept, result, capped, hasher)
 
     expect(truncatedScan).toBe(true)
     expect(JSON.stringify(decision)).not.toContain(SLACK)
+  })
+
+  it('reports a partial scan even when it found nothing', async () => {
+    const capped = resolvePolicy({
+      auditLog: '/dev/null',
+      redactionKeyFile: '/dev/null',
+      maxScanBytes: 100,
+      breadthTier: true,
+      resultRedaction: true,
+      telemetryRedaction: true,
+      redactTelemetryWorkspacePaths: true,
+    } satisfies Config)
+    const result = success({ text: 'x'.repeat(400) }, 'x'.repeat(400))
+
+    const { spans, truncatedScan } = await redactDecision(accept, result, capped, hasher)
+
+    expect(spans).toEqual([])
+    expect(truncatedScan).toBe(true)
   })
 })
