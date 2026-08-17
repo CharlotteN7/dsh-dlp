@@ -32,6 +32,7 @@ const policy = resolvePolicy({
   remoteImageNeutralization: true,
   redactTelemetryWorkspacePaths: true,
   configWriteAsk: true,
+  approvalSuppressionAsk: true,
 } satisfies Config)
 
 const success = (value: unknown, text: string): ToolExecutionResult => ({
@@ -320,6 +321,7 @@ describe('a value that cannot be cleaned', () => {
       remoteImageNeutralization: true,
       redactTelemetryWorkspacePaths: true,
       configWriteAsk: true,
+      approvalSuppressionAsk: true,
     } satisfies Config)
     const rules = [
       ...stubborn.syncRules,
@@ -365,6 +367,7 @@ describe('a result larger than the tier-2 budget', () => {
       remoteImageNeutralization: true,
       redactTelemetryWorkspacePaths: true,
       configWriteAsk: true,
+      approvalSuppressionAsk: true,
     } satisfies Config)
     const lines = Array.from({ length: 400 }, (_, index) => `line ${index}`)
     lines[399] = `token ${SLACK}`
@@ -387,6 +390,7 @@ describe('a result larger than the tier-2 budget', () => {
       remoteImageNeutralization: true,
       redactTelemetryWorkspacePaths: true,
       configWriteAsk: true,
+      approvalSuppressionAsk: true,
     } satisfies Config)
     const result = success({ text: 'x'.repeat(400) }, 'x'.repeat(400))
 

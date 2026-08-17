@@ -9,10 +9,11 @@
  *    has no allow arm.
  * 2. `tools/pre-execute` — the async breadth tier, which can await
  *    `@secretlint/core`. Neutralizable by any listener registered ahead of it.
- * 2b. `tools/pre-execute` — the `ask` tier for writes to behaviour-changing
- *    config paths. Deliberately here rather than on the floor: its rules have a
- *    real false-positive rate and the floor cannot ask. Neutralizable, and it
- *    abstains entirely when no approval service is mounted.
+ * 2b. `tools/pre-execute` — the `ask` tier, for writes to behaviour-changing
+ *    config paths and for calls carrying an argument that switches their own
+ *    confirmation off. Deliberately here rather than on the floor: its rules
+ *    have a real false-positive rate and the floor cannot ask. Neutralizable,
+ *    and it abstains entirely when no approval service is mounted.
  * 3. `tools/post-execute` — result redaction, applied before the `tool/result`
  *    session event is appended, so the durable log records the redacted copy;
  *    a result that cannot be cleaned is withheld rather than accepted.
@@ -47,6 +48,7 @@ import { safeEvaluateGuard } from './guard.ts'
 import { neutralizeImageStream } from './images.ts'
 import { ExecutionSnapshots, mutationReason } from './mutation.ts'
 import { evaluateConfigWrite } from './config-writes.ts'
+import { evaluateApprovalSuppression } from './approvals.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
 import { redactRecord, telemetrySeamNotice } from './telemetry.ts'
 import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from './sink.ts'
@@ -265,12 +267,13 @@ export function apply(ctx: Context, config: Config): void {
   const discloseApprovalSeam = (): void => {
     if (approvalSeamReported) return
     approvalSeamReported = true
-    notice(ctx, 'dsh-dlp: configWriteAsk is enabled, but no approval service is mounted, so an ask would degrade'
-      + ' to a denial. This tier abstains instead: a write to a behaviour-changing config path is allowed through'
+    notice(ctx, 'dsh-dlp: the ask tier (configWriteAsk, approvalSuppressionAsk) is enabled, but no approval service'
+      + ' is mounted, so an ask would degrade to a denial. This tier abstains instead: a write to a'
+      + ' behaviour-changing config path, and a call that switches its own confirmation off, are allowed through'
       + ' with no prompt. The guard floor is unaffected.')
   }
 
-  if (policy.configWriteAsk) {
+  if (policy.configWriteAsk || policy.approvalSuppressionAsk) {
     // Registered ahead of the breadth tier, so a call that is both a config
     // write and carries a secret is denied rather than merely asked about:
     // this listener sees whatever the rest of the waterfall settled on and
@@ -278,7 +281,11 @@ export function apply(ctx: Context, config: Config): void {
     ctx.on('tools/pre-execute', async (exec: ToolExecution, next: () => Promise<PreToolDecision>) => {
       const decision = await next()
       if (decision.kind !== 'allow') return decision
-      const finding = evaluateConfigWrite(exec)
+      // The argument that switches a confirmation off is reported ahead of the
+      // file it would write: it describes the call itself rather than what the
+      // call touches, and it is the one the user has least reason to expect.
+      const finding = (policy.approvalSuppressionAsk ? evaluateApprovalSuppression(exec) : undefined)
+        ?? (policy.configWriteAsk ? evaluateConfigWrite(exec) : undefined)
       if (finding === undefined) return decision
       // A call the floor will deny anyway is left to the floor. Any non-allow
       // decision from this waterfall skips guards entirely, so asking here

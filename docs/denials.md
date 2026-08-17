@@ -165,6 +165,37 @@ Two more limits worth stating:
   resolves an `ask` through `ctx.get('approval')` and degrades to a *denial* when nothing is
   composed — which would turn this tier into the silent hard deny it was designed not to be. It
   reports once on `process.stderr` and `ctx.logger` and lets the call through. `configWriteAsk:
-  false` turns it off entirely.
+  false` turns this half of the tier off entirely.
+
+---
+
+## Arguments that switch off their own confirmation
+
+The same tier watches one thing that is not a file at all: a tool argument whose effect is to
+skip the confirmation for the call carrying it. CVE-2026-18733 is `non_interactive: true`,
+CVE-2026-53808 is `apply: true` while `approvalPolicy` is still `pending`, and CVE-2026-56075 is
+`approval_mode: auto`. In each one the model composes an argument that removes the human from
+that call, on a call whose paths and arguments are otherwise unremarkable.
+
+| Rule | Arguments |
+|---|---|
+| `approval-non-interactive` | `non_interactive` (any spelling) set to a true-ish value |
+| `approval-mode-auto` | `approval_mode`, `approval_policy` or `approval_setting` set to `auto`, `never`, `none`, `bypass`, `full-auto` or `yolo` |
+| `approval-apply-pending` | `apply` true **and** `approvalPolicy: pending` on the same object |
+
+Keys are matched with `_`, `-` and `.` removed and case folded, so `non_interactive`,
+`nonInteractive` and `non-interactive` are one name, at any depth of the arguments. A tool that
+can only look is left alone: it has nothing to confirm. `approvalSuppressionAsk: false` turns
+this half of the tier off.
+
+**This is `ask` for the same reason the write side is, and the reasoning is worth stating.**
+`non_interactive` also means "no TTY" on plenty of ordinary programs, and a batch workflow can
+legitimately pass it. The tool registry is open, so which argument names carry approval meaning
+is a guess about tools this build has never seen — and a guess does not belong on a floor whose
+denials cannot be overridden. An `ask` is also the *right* remedy rather than a compromise: the
+argument's whole purpose is to remove a prompt, and this tier puts one back.
+
+It shares the write side's costs: neutralizable at `tools/pre-execute`, abstaining when no
+approval service is mounted, and silent on a call the floor already denies.
 
 ---

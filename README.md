@@ -24,7 +24,10 @@ built as an out-of-repo plugin.
    templates, `.vscode/tasks.json`, `.mcp.json`, git hooks, CI workflows, shell startup files,
    `pnpm-workspace.yaml` — and before it writes a `*_BASE_URL` that would redirect a provider
    credential.
-7. **Writes an audit record for every decision** — rule id, rule version, offsets, keyed hash.
+7. **Asks before a call switches off its own confirmation** — `non_interactive: true`,
+   `approval_mode: auto`, an `apply` whose approval is still pending. Both `ask` tiers are
+   prompts rather than controls: they live at `tools/pre-execute` and can be neutralised.
+8. **Writes an audit record for every decision** — rule id, rule version, offsets, keyed hash.
    Never the secret, never the path or command that matched. `dsh-dlp report` reads it back.
 
 ## What this is not
@@ -84,6 +87,7 @@ load.
     resultRedaction: true
     telemetryRedaction: true
     configWriteAsk: true
+    approvalSuppressionAsk: true
 ```
 
 `redactionKeyFile` is created on first mount with 32 random bytes at mode `0600`. Keep it out of

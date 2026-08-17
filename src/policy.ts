@@ -50,6 +50,12 @@ export interface Config {
    * letting an `ask` degrade into a denial.
    */
   configWriteAsk: boolean
+  /**
+   * Whether a call carrying an argument that switches its own confirmation off
+   * asks the user first. Shares the `ask` tier, and its approval service, with
+   * {@link Config.configWriteAsk}.
+   */
+  approvalSuppressionAsk: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -63,6 +69,7 @@ export const Config: z<Config> = z.object({
   remoteImageNeutralization: z.boolean().default(true),
   redactTelemetryWorkspacePaths: z.boolean().default(true),
   configWriteAsk: z.boolean().default(true),
+  approvalSuppressionAsk: z.boolean().default(true),
 })
 
 /** Config toggles a repo-local policy may switch on, and never off. */
@@ -73,6 +80,7 @@ const ENABLEABLE = [
   'remoteImageNeutralization',
   'redactTelemetryWorkspacePaths',
   'configWriteAsk',
+  'approvalSuppressionAsk',
 ] as const
 
 /** One toggle name a repo-local policy may name in `enable`. */
@@ -104,6 +112,7 @@ export interface ResolvedPolicy {
   readonly remoteImageNeutralization: boolean
   readonly redactTelemetryWorkspacePaths: boolean
   readonly configWriteAsk: boolean
+  readonly approvalSuppressionAsk: boolean
 }
 
 /** Thrown when a policy file is malformed or attempts to loosen the policy. */
@@ -369,5 +378,6 @@ export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy
     remoteImageNeutralization: enabled('remoteImageNeutralization'),
     redactTelemetryWorkspacePaths: enabled('redactTelemetryWorkspacePaths'),
     configWriteAsk: enabled('configWriteAsk'),
+    approvalSuppressionAsk: enabled('approvalSuppressionAsk'),
   }
 }

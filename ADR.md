@@ -354,8 +354,9 @@ upstream's own convention:
 **Coverage is not evidence that a rule table is right.** A single `it.each` over a table reaches
 100% of it while proving only that it was iterated, and the entries are most of what this
 package is. `tests/unit/rule-tables.spec.ts` therefore drives every exported table — the tier-1
-detectors, the invisible-character classes, the credential paths, the home-anchored rules and
-the behaviour-changing config paths — from its own export, with one positive and one near miss
+detectors, the invisible-character classes, the credential paths, the home-anchored rules, the
+behaviour-changing config paths and the approval-suppressing arguments — from its own export,
+with one positive and one near miss
 per rule id and a key-set assertion in both directions. A rule added without a fixture fails
 three tests rather than shipping untested.
 
@@ -587,6 +588,8 @@ listener, not only this one.
 
 ## 18. Behaviour-changing config writes ask, and are deliberately not on the floor
 
+The same tier carries a second rule class, over arguments rather than files; §21 records it.
+
 Everything in §8 governs reads. The dominant technique of 2026 is the agent *writing* a file
 that changes what happens next time: the Miasma worm's `SessionStart` hooks in
 `.claude/settings.json` and `.gemini/settings.json`, an always-apply `.cursor/rules/setup.mdc`,
@@ -705,3 +708,48 @@ The narrower alternative — a `content` rule matching a `registry:` assignment,
 and schema-registry configuration, and a content rule ignores where the bytes are going, so it
 would prompt on ordinary work in repositories that have never seen pnpm. `*_BASE_URL` survives
 that test because the spelling is provider-credential-specific; `registry:` does not.
+
+## 21. An argument that switches off its own confirmation asks, and is not on the floor
+
+CVE-2026-18733 (`non_interactive: true`), CVE-2026-53808 (`apply: true` while `approvalPolicy`
+is `pending`) and CVE-2026-56075 (`approval_mode: auto`) are one technique: the model composes
+an argument that removes the human from a call whose paths and arguments are otherwise
+unremarkable. No other seam here sees it. The floor reads path arguments and scans for secrets;
+neither is present. §16's mutation check compares the call against its own snapshot, and this
+call was never rewritten — the model asked for it in that form. §18's table matches file names,
+and there may be no file at all.
+
+**It is an `ask`, in the same tier and the same seam as the write side.** The reasoning ran in
+both directions and the deny case is not weak: a denial would make the model reissue the call
+without the flag, at which point the tool asks its own confirmation and the human sees the
+prompt the argument was trying to skip. That is a better outcome than an approved `ask`, which
+runs the call with the suppression intact.
+
+It loses on the same test §18 applies. `non_interactive` also means "no TTY" on a great many
+ordinary programs, and a batch context can pass it for that reason alone. The tool registry is
+open, so which argument names carry approval meaning is a guess about tools this build has never
+seen — and `ctx.tools.guard()` produces denials that say they cannot be overridden. A guess with
+that consequence is how a floor becomes an uninstall. The `ask` is also the *matching* remedy
+rather than a compromise: the argument's whole purpose is to remove a prompt, and this tier puts
+one back, at a seam the argument itself cannot reach.
+
+**Two keys, not one, for CVE-2026-53808.** `apply: true` alone is how most infrastructure tools
+are driven and `approvalPolicy: pending` alone is the ordinary state of a change waiting on
+someone; only the pair says a decision is being skipped. Both halves must sit on the *same*
+object, because an `apply` in one element of a batch and a pending approval in another are two
+different requests and pairing them across objects would prompt about a call nobody made.
+
+**Matched by argument name and value, at any depth, never by tool name.** A table keyed on tool
+names would abstain on every MCP tool this build has never heard of, which is where these
+arguments live. Keys are compared with `_`, `-` and `.` removed and case folded, so one rule
+covers `non_interactive`, `nonInteractive` and `non-interactive`. Only the affirmative values
+match: a rule that fired on `non_interactive: false` would prompt about the argument that asks
+*for* a prompt.
+
+**Its own toggle.** `approvalSuppressionAsk` is separate from `configWriteAsk` because the two
+rule classes have separate false-positive profiles — a deployment whose agents drive batch tools
+may want one and not the other — and both feed one listener, so the `ask` tier is still a single
+registration between the mutation snapshot and the breadth tier.
+
+It inherits every cost §18 records: neutralizable at `tools/pre-execute`, abstaining when no
+approval service is mounted, and silent on a call the floor already denies.

@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { APPROVAL_SUPPRESSION_RULES, evaluateApprovalSuppression } from '../../src/approvals.ts'
 import { CONFIG_WRITE_RULES, evaluateConfigWrite, type ConfigWriteRule } from '../../src/config-writes.ts'
 import { SYNC_RULES, UNICODE_RULES, scanSync, scanUnicode, type UnicodeAction } from '../../src/detectors.ts'
 import {
@@ -348,6 +349,58 @@ describe('the behaviour-changing config table', () => {
       // Nothing else in the table may claim it either: this tier prompts a
       // human, and a tier that prompts on ordinary work gets switched off.
       expect(evaluateConfigWrite(call(rule, fixture?.miss ?? ''))).toBeUndefined()
+    },
+  )
+})
+
+/** One approval-suppression rule's evidence, which is an argument object rather than a string. */
+interface ArgumentFixture {
+  /** Arguments the rule must report. */
+  readonly match: Record<string, unknown>
+  /** Neighbouring arguments the same rule must leave alone. */
+  readonly miss: Record<string, unknown>
+}
+
+const APPROVAL_FIXTURES: Readonly<Record<string, ArgumentFixture>> = {
+  // Each near miss is the same argument set with the confirmation left in
+  // place, so a rule that fires on the value asking *for* a prompt fails here.
+  'dsh-dlp/approval-non-interactive': {
+    match: { path: '/srv/repo/main.tf', non_interactive: true },
+    miss: { path: '/srv/repo/main.tf', non_interactive: false },
+  },
+  'dsh-dlp/approval-mode-auto': {
+    match: { approval_mode: 'auto' },
+    miss: { approval_mode: 'prompt' },
+  },
+  // Neither half is a finding alone: `apply: true` is how most infrastructure
+  // tools are driven, and a pending approval is the ordinary state of one.
+  'dsh-dlp/approval-apply-pending': {
+    match: { apply: true, approvalPolicy: 'pending' },
+    miss: { apply: true, approvalPolicy: 'approved' },
+  },
+}
+
+describe('the approval-suppression table', () => {
+  it('carries a fixture for every rule, and no fixture for a rule that is gone', () => {
+    expect(Object.keys(APPROVAL_FIXTURES).sort()).toEqual(APPROVAL_SUPPRESSION_RULES.map(rule => rule.id).sort())
+  })
+
+  it.each(APPROVAL_SUPPRESSION_RULES.map(rule => [rule.id] as const))('%s is what its own call reports', (id) => {
+    const fixture = APPROVAL_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+    expect(evaluateApprovalSuppression({ name: 'mcp__acme__deploy', arguments: fixture?.match })?.rule.id).toBe(id)
+  })
+
+  it.each(APPROVAL_SUPPRESSION_RULES.map(rule => [rule.id] as const))(
+    '%s leaves the call beside it alone',
+    (id) => {
+      const fixture = APPROVAL_FIXTURES[id]
+      expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+      // Nothing else in the table may claim it either: this tier prompts a
+      // human, and a tier that prompts on ordinary work gets switched off.
+      expect(evaluateApprovalSuppression({ name: 'mcp__acme__deploy', arguments: fixture?.miss })).toBeUndefined()
     },
   )
 })

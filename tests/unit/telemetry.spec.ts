@@ -23,6 +23,7 @@ const config: Config = {
   remoteImageNeutralization: true,
   redactTelemetryWorkspacePaths: true,
   configWriteAsk: true,
+  approvalSuppressionAsk: true,
 }
 const policy = resolvePolicy(config)
 const withoutPathRedaction = resolvePolicy({ ...config, redactTelemetryWorkspacePaths: false })

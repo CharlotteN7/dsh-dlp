@@ -142,6 +142,7 @@ function mount(
     remoteImageNeutralization: true,
     redactTelemetryWorkspacePaths: true,
     configWriteAsk: true,
+    approvalSuppressionAsk: true,
     ...overrides,
   })
   const records = (): Record<string, unknown>[] => {
@@ -300,7 +301,8 @@ describe('the breadth tier registration', () => {
   it('is absent when the deployment turns it off', () => {
     // The mutation snapshot listener stays: it is registered whatever the
     // other two tiers are set to, and it is the first of the three.
-    expect(mount({ breadthTier: false, configWriteAsk: false }).listeners.get('tools/pre-execute')).toHaveLength(1)
+    expect(mount({ breadthTier: false, configWriteAsk: false, approvalSuppressionAsk: false })
+      .listeners.get('tools/pre-execute')).toHaveLength(1)
   })
 
   it('is the last pre-execute listener, so the ask tier never hides its denial', () => {
@@ -314,7 +316,7 @@ describe('the breadth tier registration', () => {
   })
 })
 
-describe('the config-write ask tier', () => {
+describe('the ask tier', () => {
   /** An approval service, which the registry needs before an `ask` can be granted. */
   const approval = { services: { approval: {} } }
 
@@ -429,8 +431,58 @@ describe('the config-write ask tier', () => {
     expect(plugin.records()).toEqual([])
   })
 
-  it('is absent when the deployment turns it off', () => {
-    expect(mount({ configWriteAsk: false }).listeners.get('tools/pre-execute')).toHaveLength(2)
+  it('is absent only when both of its rule classes are turned off', () => {
+    expect(mount({ configWriteAsk: false, approvalSuppressionAsk: false })
+      .listeners.get('tools/pre-execute')).toHaveLength(2)
+    expect(mount({ configWriteAsk: false }).listeners.get('tools/pre-execute')).toHaveLength(3)
+    expect(mount({ approvalSuppressionAsk: false }).listeners.get('tools/pre-execute')).toHaveLength(3)
+  })
+
+  it.each([
+    ['a non-interactive flag', { command: 'terraform apply', non_interactive: true }, 'dsh-dlp/approval-non-interactive'],
+    ['an approval mode that approves for the model', { approval_mode: 'auto' }, 'dsh-dlp/approval-mode-auto'],
+    ['an apply whose approval is still pending', { apply: true, approvalPolicy: 'pending' }, 'dsh-dlp/approval-apply-pending'],
+  ])('asks before a call carrying %s, and records the rule', async (_label, args, ruleId) => {
+    const plugin = mount({}, approval.services)
+
+    const decision = await askListener(plugin)(execution('mcp__acme__deploy', args), async () => ({ kind: 'allow' }))
+
+    expect(decision).toMatchObject({ kind: 'ask' })
+    expect(plugin.records()[0]).toMatchObject({ kind: 'pre-execute-ask', tool: 'mcp__acme__deploy', ruleId })
+  })
+
+  it('reports the argument ahead of the file, because it describes the call itself', async () => {
+    const plugin = mount({}, approval.services)
+
+    const decision = await askListener(plugin)(
+      execution('write', { file_path: '/srv/repo/CLAUDE.md', non_interactive: true }),
+      async () => ({ kind: 'allow' }),
+    )
+
+    expect(JSON.stringify(decision)).toContain('dsh-dlp/approval-non-interactive')
+  })
+
+  it.each([
+    ['the write half', { configWriteAsk: false }, { non_interactive: true }, 'dsh-dlp/approval-non-interactive'],
+    ['the argument half', { approvalSuppressionAsk: false }, { file_path: '/srv/repo/CLAUDE.md' }, 'dsh-dlp/config-agent-instructions'],
+  ])('keeps asking about the other class when a deployment turns off %s', async (_label, config, args, ruleId) => {
+    const plugin = mount(config, approval.services)
+
+    const decision = await askListener(plugin)(execution('write', args), async () => ({ kind: 'allow' }))
+
+    expect(decision).toMatchObject({ kind: 'ask' })
+    expect(plugin.records()[0]).toMatchObject({ ruleId })
+  })
+
+  it.each([
+    ['a write the argument half would not see', { configWriteAsk: false }, { file_path: '/srv/repo/CLAUDE.md' }],
+    ['an argument the write half would not see', { approvalSuppressionAsk: false }, { non_interactive: true }],
+  ])('leaves %s alone', async (_label, config, args) => {
+    const plugin = mount(config, approval.services)
+    const allow: PreToolDecision = { kind: 'allow' }
+
+    expect(await askListener(plugin)(execution('write', args), async () => allow)).toBe(allow)
+    expect(plugin.records()).toEqual([])
   })
 })
 
@@ -767,6 +819,7 @@ describe('this plugin\'s own files', () => {
       remoteImageNeutralization: false,
       redactTelemetryWorkspacePaths: false,
       configWriteAsk: false,
+      approvalSuppressionAsk: false,
     })
 
     expect(guardOf(stub)(execution('read', { file_path: redactionKeyFile }))).toContain('dsh-dlp denied')

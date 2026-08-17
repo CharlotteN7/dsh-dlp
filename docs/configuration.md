@@ -23,6 +23,7 @@ nav_order: 3
     remoteImageNeutralization: true
     redactTelemetryWorkspacePaths: true
     configWriteAsk: true
+    approvalSuppressionAsk: true
 ```
 
 `redactionKeyFile` is created on first mount with 32 random bytes at mode `0600`. Keep it out
@@ -52,7 +53,7 @@ addCredentialPaths:
 addEgressTools: [acme_publish]
 raiseSeverity:
   dsh-dlp/secret-assignment: high
-enable: [telemetryRedaction, configWriteAsk]
+enable: [telemetryRedaction, configWriteAsk, approvalSuppressionAsk]
 ```
 
 Any other key, and any downgrade, makes the **whole file invalid**: it is reported on

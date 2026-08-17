@@ -22,3 +22,4 @@
         remoteImageNeutralization: true
         redactTelemetryWorkspacePaths: true
         configWriteAsk: true
+        approvalSuppressionAsk: true

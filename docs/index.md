@@ -66,6 +66,11 @@ More limits worth stating up front:
   span grows outward to the nearest delimiter, which over-redacts in the safe direction, but a
   secret whose own text contains one of those delimiters is covered by two placeholders with the
   delimiter left between them.
+- **An approval-suppressing argument is recognised by name.** `non_interactive`,
+  `approval_mode` and an `apply` beside a pending `approvalPolicy` are the three published
+  shapes; a tool that skips its confirmation under some other argument name is not covered, and
+  the registry is open, so this list is a floor on what is known rather than a description of
+  what exists.
 - **`additionalContexts` are not scanned.** They are model-visible `UserMessage` payloads and
   this release does not redact them.
 - **Local writes are out of scope.** A `write` or `edit` into a synced directory moves data off
