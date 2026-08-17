@@ -1,6 +1,6 @@
 {
   "name": "dsh-dlp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Data-loss-prevention plugin for DeepSeek Harness: a non-configurable tool guard floor, tool-result redaction, and fail-closed telemetry redaction",
   "license": "MIT",
   "author": "Ivan Tyshchenko <nsof@protonmail.com>",
