@@ -4,11 +4,12 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | yes |
-| < 0.1 | no |
+| 0.3.x | yes |
+| < 0.3 | no |
 
-Only the latest published `0.1.x` receives fixes. There is no long-term-support branch while
-the package is pre-1.0.
+Only the latest published `0.3.x` receives fixes. There is no long-term-support branch while
+the package is pre-1.0: each minor supersedes the one before it, and a fix ships as the next
+`0.3.x` patch or, if the minor has already moved on, as the next minor.
 
 ## Reporting a vulnerability
 
@@ -44,4 +45,11 @@ These do count, and we want to hear about them:
 - a secret surviving into the session log through a `tools/post-execute` arm;
 - a repo-local `policyFile` loosening any part of the floor, executing code, or stalling the
   agent;
-- any way to make the guard abstain that does not require executing code.
+- any way to make the guard abstain that does not require executing code;
+- a terminal control sequence, or any other forgeable bytes, reaching the audit sink or a
+  denial the user reads.
+
+The `ask` tier for behaviour-changing config paths is **not** part of the floor and is
+documented as neutralizable: it lives at `tools/pre-execute`, so a listener registered ahead of
+it disables it. A missed path there is a gap worth reporting; the fact that another plugin can
+switch the tier off is a stated design limit, not a vulnerability.
