@@ -253,7 +253,7 @@ checkout, build first and add the tarball:
 ```sh
 git clone https://github.com/CharlotteN7/dsh-dlp && cd dsh-dlp
 pnpm install && pnpm run build && pnpm pack
-dsh plugin --profile <name> add ./dsh-dlp-0.1.0.tgz
+dsh plugin --profile <name> add ./dsh-dlp-0.3.0.tgz
 ```
 
 ## Configure
