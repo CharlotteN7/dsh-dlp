@@ -13,12 +13,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  # Pinned to the rc this plugin is developed against. The npm `latest` dist-tag
-  # for @deepseek-ai/dsh-* still points at 0.0.1-rc.1, so a floating range would
-  # silently resolve to ancient code.
-  DSH_VERSION: 0.1.0-rc.6
-
 jobs:
   build:
     name: build and unit tests (node ${{ matrix.node }})
@@ -55,8 +49,16 @@ jobs:
         run: pnpm run test:coverage
 
   e2e:
-    name: end-to-end against a real harness
+    name: end-to-end against a real harness (dsh ${{ matrix.dsh }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every published rc the peer ranges admit, each pinned exactly: the npm
+        # `latest` dist-tag for @deepseek-ai/dsh-* still points at 0.0.1-rc.1, so
+        # a floating range would silently resolve to ancient code. A new rc is
+        # added here, and the leg that fails names the version that broke.
+        dsh: ['0.1.0-rc.6', '0.1.0-rc.7']
     steps:
       - uses: actions/checkout@v4
       - run: corepack enable
@@ -78,6 +80,8 @@ jobs:
       # @deepseek-ai/cordis-plugin-group. `nodeLinker: hoisted` is what dsh's own
       # profiles use, and the build approvals cover its native dependencies.
       - name: Install the published dsh CLI
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/dsh-cli"
