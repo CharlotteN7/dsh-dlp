@@ -81,7 +81,7 @@ describe('the audit sink', () => {
       decisionId: newDecisionId(),
       tool: forged,
       originalTool: 'read',
-      unicode: { '\u001B]8;;https://exfil.invalid': 1 },
+      unicode: { '\u001B]8;;https://exfil.invalid\u0007': 1 },
     })
 
     const row = JSON.parse(readFileSync(file, 'utf8').trim()) as Record<string, unknown>
