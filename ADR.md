@@ -400,8 +400,7 @@ says so instead of implying coverage.
 The class is `report` because one selector is glyph selection: VS15/VS16 after a base character,
 one selector after one ideograph in an Ideographic Variation Sequence. That reasoning does not
 extend to a run. GlassWorm encoded executable JavaScript one byte per selector across five
-waves — 73 sleeper extensions, the first MCP package compromises — which is the same code
-points used as a container rather than as a modifier.
+waves, which is the same code points used as a container rather than as a modifier.
 
 So the isolated rule now matches a *whole* run of one to three, and a second rule strips a run of
 four or more. The threshold is justified rather than guessed: an emoji ZWJ sequence separates its

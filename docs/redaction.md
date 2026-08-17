@@ -106,7 +106,7 @@ delimiters, so the visible word it hid inside survives.
 base character, one selector after one ideograph in an Ideographic Variation Sequence — so an
 isolated occurrence stays counted-only. A run of four or more is not glyph selection: it is a
 byte string wearing the same code points, which is how GlassWorm hid executable JavaScript
-across five waves and the first MCP package compromises. An emoji ZWJ sequence separates its
+across five waves. An emoji ZWJ sequence separates its
 selectors with a joiner, so no legitimate sequence produces a run at all; four is a conservative
 floor, and a real payload is hundreds of selectors long.
 
