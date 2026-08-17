@@ -1,0 +1,224 @@
+/**
+ * Every entry of every exported rule table, one positive and one near-miss
+ * each.
+ *
+ * The tables are iterated from their exports rather than listed here, so a rule
+ * added without a fixture fails this file instead of shipping untested: the
+ * coverage gate proves a table was iterated, not that its entries match what
+ * they claim to.
+ */
+
+import { describe, expect, it } from 'vitest'
+import { SYNC_RULES, UNICODE_RULES, scanSync, scanUnicode, type UnicodeAction } from '../../src/detectors.ts'
+import { CREDENTIAL_PATH_RULES, matchCredentialPath, normalizeCandidatePath } from '../../src/paths.ts'
+
+/** One rule's evidence: a string it must match, and a near one it must not. */
+interface Fixture {
+  /** Exactly the text the rule is expected to cover, framed in prose by the test. */
+  readonly match: string
+  /** A neighbouring string the same rule must leave alone. */
+  readonly miss: string
+}
+
+/** Every credential shape below is invented for this file and is never a live credential. */
+const SYNC_FIXTURES: Readonly<Record<string, Fixture>> = {
+  'dsh-dlp/aws-access-key-id': {
+    match: 'AKIAIOSFODNN7EXAMPLE',
+    miss: 'AKIAIOSFODNN7EXAMPL',
+  },
+  'dsh-dlp/aws-secret-access-key': {
+    match: 'aws_secret_access_key = kL9xQ2mZ7pR4tY6wA1sD3fG5hJ8kL0nM2bV4cX6z',
+    miss: 'aws_secret_access_key = kL9xQ2mZ7pR4tY6w',
+  },
+  'dsh-dlp/github-token': {
+    match: `ghp_${'B'.repeat(36)}`,
+    miss: `ghp_${'B'.repeat(20)}`,
+  },
+  'dsh-dlp/slack-token': {
+    match: 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx',
+    miss: 'xoxb-1234',
+  },
+  'dsh-dlp/stripe-secret-key': {
+    match: `sk_live_${'5'.repeat(24)}`,
+    miss: 'sk_test_51H8xQ2mZ7pR4tY6wA1sD3fG5',
+  },
+  'dsh-dlp/anthropic-api-key': {
+    match: `sk-ant-api03-${'a'.repeat(24)}`,
+    miss: 'sk-ant-api03-short',
+  },
+  'dsh-dlp/openai-api-key': {
+    match: `sk-proj-${'a'.repeat(40)}`,
+    miss: 'sk-proj-tooshort',
+  },
+  'dsh-dlp/google-api-key': {
+    match: `AIza${'Sy0'.repeat(11)}xy`,
+    miss: 'AIzaSyD-shortened-key',
+  },
+  'dsh-dlp/npm-token': {
+    match: `npm_${'c'.repeat(36)}`,
+    miss: `npm_${'c'.repeat(20)}`,
+  },
+  'dsh-dlp/private-key-block': {
+    match: '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----',
+    miss: '-----BEGIN CERTIFICATE-----\nMIIEowIBAAKCAQEA\n-----END CERTIFICATE-----',
+  },
+  'dsh-dlp/json-web-token': {
+    match: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+    miss: 'eyJhbGciOiJIUzI1NiJ9',
+  },
+  'dsh-dlp/credential-url': {
+    match: 'postgres://admin:Sup3rS3cret@db.example.com:5432',
+    miss: 'postgres://db.example.com:5432',
+  },
+  'dsh-dlp/slack-webhook-url': {
+    match: 'https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX',
+    miss: 'https://hooks.slack.com/services/T0',
+  },
+  'dsh-dlp/discord-webhook-url': {
+    match: 'https://discord.com/api/webhooks/123456789012345678/AbCdEfGhIjKlMnOpQrStUvWxYz',
+    miss: 'https://discord.com/api/webhooks/123456789012345678',
+  },
+  'dsh-dlp/teams-webhook-url': {
+    match: 'https://acme.webhook.office.com/webhookb2/00000000-1111-2222-3333-444444444444@tenant',
+    miss: 'https://acme.webhook.office.com/webhookb2/short',
+  },
+  'dsh-dlp/secret-assignment': {
+    match: 'api_key = "0123456789abcdef0123"',
+    miss: 'api_key = "0123456789"',
+  },
+}
+
+/**
+ * Frame a fixture in prose, so a rule whose word-boundary anchors are wrong
+ * fails rather than passing on a bare string.
+ */
+const FRAME_PREFIX = 'context before '
+
+describe('the tier-1 rule table', () => {
+  it('carries a fixture for every rule, and no fixture for a rule that is gone', () => {
+    expect(Object.keys(SYNC_FIXTURES).sort()).toEqual(SYNC_RULES.map(rule => rule.id).sort())
+  })
+
+  it.each(SYNC_RULES.map(rule => [rule.id, rule] as const))('%s covers exactly what it matched', (id, rule) => {
+    const fixture = SYNC_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+    const framed = `${FRAME_PREFIX}${fixture?.match} context after`
+
+    const { detections } = scanSync(framed, [rule])
+
+    expect(detections).toHaveLength(1)
+    expect(detections[0]).toMatchObject({ ruleId: id, ruleVersion: rule.version, severity: rule.severity })
+    expect(framed.slice(detections[0]?.start, detections[0]?.end)).toBe(fixture?.match)
+  })
+
+  it.each(SYNC_RULES.map(rule => [rule.id, rule] as const))('%s abstains on its near miss', (id, rule) => {
+    const fixture = SYNC_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+    expect(scanSync(`${FRAME_PREFIX}${fixture?.miss} context after`, [rule]).detections).toEqual([])
+  })
+})
+
+/** One invisible-character class's evidence. */
+interface UnicodeFixture extends Fixture {
+  /** What the scan must do with the matching run. */
+  readonly action: UnicodeAction
+}
+
+const UNICODE_FIXTURES: Readonly<Record<string, UnicodeFixture>> = {
+  // Tag-block encoding of "hi", the carrier for instructions only the model reads.
+  'dsh-dlp/unicode-tag-characters': { match: '\u{E0068}\u{E0069}', miss: '\u{E0080}', action: 'strip' },
+  // Each near miss is the code point beside the class, so a class whose range
+  // grows by one fails here.
+  'dsh-dlp/unicode-bidi-override': { match: '\u202E', miss: '\u202F', action: 'strip' },
+  'dsh-dlp/unicode-zero-width': { match: '\u200B', miss: '\u200A', action: 'report' },
+  'dsh-dlp/unicode-bidi-mark': { match: '\u200F', miss: '\u061B', action: 'report' },
+  'dsh-dlp/unicode-variation-selector': { match: '\uFE0F', miss: '\uFE10', action: 'report' },
+}
+
+describe('the invisible-character table', () => {
+  it('carries a fixture for every class, and no fixture for a class that is gone', () => {
+    expect(Object.keys(UNICODE_FIXTURES).sort()).toEqual(UNICODE_RULES.map(rule => rule.id).sort())
+  })
+
+  it.each(UNICODE_RULES.map(rule => [rule.id] as const))('%s reports its own class', (id) => {
+    const fixture = UNICODE_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+    const findings = scanUnicode(`visible${fixture?.match}text`)
+
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toMatchObject({
+      ruleId: id,
+      action: fixture?.action,
+      exact: true,
+      start: 'visible'.length,
+      end: 'visible'.length + (fixture?.match.length ?? 0),
+    })
+  })
+
+  it.each(UNICODE_RULES.map(rule => [rule.id] as const))('%s abstains on the character beside its class', (id) => {
+    const fixture = UNICODE_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+    const found = scanUnicode(`visible${fixture?.miss}text`).map(finding => finding.ruleId)
+
+    expect(found).not.toContain(id)
+  })
+})
+
+const PATH_FIXTURES: Readonly<Record<string, Fixture>> = {
+  'dsh-dlp/path-dotenv': { match: '/srv/app/.env', miss: '/srv/app/.env.example' },
+  'dsh-dlp/path-ssh-dir': { match: '/home/dev/.ssh/config', miss: '/etc/sshd_config' },
+  'dsh-dlp/path-ssh-key': { match: '/home/dev/keys/id_rsa', miss: '/home/dev/src/id_generator.ts' },
+  'dsh-dlp/path-aws': { match: '/home/dev/.aws/credentials', miss: '/home/dev/docs/aws-setup.md' },
+  'dsh-dlp/path-azure': { match: '/home/dev/.azure/accessTokens.json', miss: '/home/dev/azure-pipeline.yml' },
+  'dsh-dlp/path-dsh-credentials': { match: '/home/dev/.dsh/.credentials.yaml', miss: '/home/dev/.dsh/profiles/dev/cordis.yml' },
+  'dsh-dlp/path-netrc': { match: '/home/dev/.netrc', miss: '/home/dev/docs/netrc.md' },
+  'dsh-dlp/path-npmrc': { match: '/srv/app/.npmrc', miss: '/srv/app/npmrc.example' },
+  'dsh-dlp/path-pypirc': { match: '/home/dev/.pypirc', miss: '/home/dev/pypi-upload.py' },
+  'dsh-dlp/path-git-credentials': { match: '/home/dev/.git-credentials', miss: '/home/dev/.gitconfig' },
+  'dsh-dlp/path-gh-config': { match: '/home/dev/.config/gh/hosts.yml', miss: '/home/dev/.config/ghostty/config' },
+  'dsh-dlp/path-kubeconfig': { match: '/home/dev/.kube/config', miss: '/home/dev/docs/kube-setup.md' },
+  'dsh-dlp/path-kubernetes-conf': { match: '/etc/kubernetes/admin.conf', miss: '/etc/kubernetes/README.md' },
+  'dsh-dlp/path-docker-config': { match: '/home/dev/.docker/config.json', miss: '/home/dev/.docker/daemon.json' },
+  'dsh-dlp/path-gcloud-credentials': {
+    match: '/home/dev/.config/gcloud/application_default_credentials.json',
+    miss: '/home/dev/.config/gcloud/configurations/config_default',
+  },
+  'dsh-dlp/path-rclone-config': { match: '/home/dev/.config/rclone/rclone.conf', miss: '/home/dev/docs/rclone.md' },
+  'dsh-dlp/path-pgpass': { match: '/home/dev/.pgpass', miss: '/home/dev/bin/pg_dump.sh' },
+  'dsh-dlp/path-mysql-config': { match: '/home/dev/.my.cnf', miss: '/home/dev/my.cnf.example' },
+  'dsh-dlp/path-service-account': { match: '/srv/app/service-account.json', miss: '/srv/app/service-registry.json' },
+  'dsh-dlp/path-keystore': { match: '/home/dev/certs/server.pem', miss: '/home/dev/certs/server.csr' },
+  'dsh-dlp/path-credential-name': { match: '/home/dev/.vault-token', miss: '/home/dev/src/auth/token.ts' },
+}
+
+describe('the credential-path table', () => {
+  it('carries a fixture for every rule, and no fixture for a rule that is gone', () => {
+    expect(Object.keys(PATH_FIXTURES).sort()).toEqual(CREDENTIAL_PATH_RULES.map(rule => rule.id).sort())
+  })
+
+  // The reported rule is the first one that matches, so this pins the table's
+  // order as well as each pattern: a new rule shadowing an older one fails here.
+  it.each(CREDENTIAL_PATH_RULES.map(rule => [rule.id] as const))('%s is what its own path reports', (id) => {
+    const fixture = PATH_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+    expect(matchCredentialPath(fixture?.match ?? '')?.id).toBe(id)
+  })
+
+  it.each(CREDENTIAL_PATH_RULES.map(rule => [rule.id, rule] as const))(
+    '%s leaves the ordinary path beside it alone',
+    (id, rule) => {
+      const fixture = PATH_FIXTURES[id]
+      expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+      expect(rule.pattern.test(normalizeCandidatePath(fixture?.miss ?? ''))).toBe(false)
+      // Nothing else in the table may claim it either: a near miss is ordinary
+      // work, and ordinary work that the floor denies is why a floor gets
+      // switched off.
+      expect(matchCredentialPath(fixture?.miss ?? '')).toBeUndefined()
+    },
+  )
+})
