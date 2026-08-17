@@ -178,6 +178,68 @@ describe('invisible and direction-changing characters', () => {
     expect(findings[0]).toMatchObject({ ruleId, action: 'report' })
   })
 
+  describe('a run of variation selectors', () => {
+    /** VS16, the selector an emoji presentation sequence uses. */
+    const VS = '\uFE0F'
+    /** A supplementary selector, the half of the class an Ideographic Variation Sequence uses. */
+    const IVS = '\u{E0100}'
+
+    it.each([
+      ['one selector, which picks a glyph', 1],
+      ['two, which no standard sequence produces but which is not yet a payload', 2],
+      ['three', 3],
+    ])('leaves %s alone', (_label, length) => {
+      const findings = scanUnicode(`base${VS.repeat(length)} text`)
+
+      expect(findings).toHaveLength(1)
+      expect(findings[0]).toMatchObject({ ruleId: 'dsh-dlp/unicode-variation-selector', action: 'report' })
+      expect(scanSync(`base${VS.repeat(length)}`).detections).toEqual([])
+    })
+
+    it.each([
+      ['at the threshold', 4],
+      ['well past it, as a real payload is', 200],
+    ])('strips a run %s', (_label, length) => {
+      const text = `base${VS.repeat(length)} text`
+
+      const findings = scanUnicode(text)
+
+      expect(findings).toHaveLength(1)
+      expect(findings[0]).toMatchObject({
+        ruleId: 'dsh-dlp/unicode-variation-selector-run',
+        action: 'strip',
+        start: 'base'.length,
+        end: 'base'.length + length,
+      })
+      expect(scanSync(text).detections.map(detection => detection.ruleId))
+        .toEqual(['dsh-dlp/unicode-variation-selector-run'])
+    })
+
+    it('strips a run written in the supplementary half of the class', () => {
+      // GlassWorm used both halves; the supplementary selectors are two UTF-16
+      // units each, so a run of four is eight units long.
+      const text = `base${IVS.repeat(4)}`
+
+      expect(scanUnicode(text)).toMatchObject([{ ruleId: 'dsh-dlp/unicode-variation-selector-run', end: text.length }])
+    })
+
+    it('reports the isolated selector beside a run as its own finding', () => {
+      const findings = scanUnicode(`a${VS.repeat(4)}b${VS}c`)
+
+      expect(findings.map(finding => finding.ruleId)).toEqual([
+        'dsh-dlp/unicode-variation-selector-run',
+        'dsh-dlp/unicode-variation-selector',
+      ])
+    })
+
+    it('is a run even when another invisible class sits beside it', () => {
+      expect(scanUnicode(`${ZWJ}${VS.repeat(4)}`).map(finding => finding.ruleId)).toEqual([
+        'dsh-dlp/unicode-zero-width',
+        'dsh-dlp/unicode-variation-selector-run',
+      ])
+    })
+  })
+
   it('splits one run into its classes rather than reporting the run', () => {
     const findings = scanUnicode(`${TAGS}${ZWJ}`)
 

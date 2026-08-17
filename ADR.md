@@ -368,6 +368,22 @@ UTS #39 confusables are not attempted. A homoglyph is a visible, legitimately-en
 character, detecting it needs a data table, and it defeats every rule in this package. README
 says so instead of implying coverage.
 
+### Variation selectors split by run length, not by class
+
+The class is `report` because one selector is glyph selection: VS15/VS16 after a base character,
+one selector after one ideograph in an Ideographic Variation Sequence. That reasoning does not
+extend to a run. GlassWorm encoded executable JavaScript one byte per selector across five
+waves — 35,800 installs, 300+ repositories, 73 sleeper extensions, the first MCP package
+compromises — which is the same code points used as a container rather than as a modifier.
+
+So the isolated rule now matches a *whole* run of one to three, and a second rule strips a run of
+four or more. The threshold is justified rather than guessed: an emoji ZWJ sequence separates its
+selectors with a joiner, so a legitimate consecutive run stops at one; two has no standard
+meaning; four leaves no reading but "these are bytes"; and a payload worth hiding is hundreds of
+selectors long, so 4 is a conservative floor rather than a tight one. The isolated rule's
+lookarounds are what keep the two from both firing on the same characters, so a long run is one
+finding rather than two.
+
 ### Terminal control sequences split by lane, not by class
 
 CVE-2026-35651: ANSI sequences in tool titles reached approval prompts **and permission logs**,

@@ -462,7 +462,8 @@ session titles — and never on the tool-result path.
 | Bidi overrides and isolates | `U+202A–U+202E`, `U+2066–U+2069` | replaced |
 | Zero-width | `U+200B–U+200D`, `U+2060`, `U+FEFF` | counted only |
 | Bidi marks | `U+061C`, `U+200E–U+200F` | counted only |
-| Variation selectors | `U+FE00–U+FE0F`, `U+E0100–U+E01EF` | counted only |
+| Variation selectors, 1–3 in a row | `U+FE00–U+FE0F`, `U+E0100–U+E01EF` | counted only |
+| Variation selectors, 4 or more in a row | the same class | replaced |
 | Terminal control sequences | CSI, OSC, DCS, SOS, PM, APC, other `ESC` forms, C1 `U+0080–U+009F` | counted in tool results, **replaced in the audit sink** |
 
 The first two have no legitimate use in tool output — the Tags block is a full invisible ASCII
@@ -475,6 +476,14 @@ Every class is `medium`, below the severity at which the guard floor denies, so 
 character is never turned into a denial. A replaced run becomes an ordinary placeholder and,
 unlike a secret, is replaced exactly: an invisible character is not widened to its surrounding
 delimiters, so the visible word it hid inside survives.
+
+**Variation selectors are split by run length.** One selector picks a glyph — VS15/VS16 after a
+base character, one selector after one ideograph in an Ideographic Variation Sequence — so an
+isolated occurrence stays counted-only. A run of four or more is not glyph selection: it is a
+byte string wearing the same code points, which is how GlassWorm hid executable JavaScript
+across five waves, 35,800 installs, 300+ repositories and the first MCP package compromises. An
+emoji ZWJ sequence separates its selectors with a joiner, so no legitimate sequence produces a
+run at all; four is a conservative floor, and a real payload is hundreds of selectors long.
 
 **Terminal control sequences are split by lane rather than by class.** A tool result carrying
 SGR colour codes is the normal output of `git diff`, `rg` and `pytest`, so on that lane the

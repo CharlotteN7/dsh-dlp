@@ -174,6 +174,8 @@ const UNICODE_FIXTURES: Readonly<Record<string, UnicodeFixture>> = {
   'dsh-dlp/unicode-zero-width': { match: '\u200B', miss: '\u200A', action: 'report' },
   'dsh-dlp/unicode-bidi-mark': { match: '\u200F', miss: '\u061B', action: 'report' },
   'dsh-dlp/unicode-variation-selector': { match: '\uFE0F', miss: '\uFE10', action: 'report' },
+  // Four in a row is not glyph selection; three still is.
+  'dsh-dlp/unicode-variation-selector-run': { match: '\uFE0F'.repeat(4), miss: '\uFE0F'.repeat(3), action: 'strip' },
   // A full CSI, not the SGR subset: parameter bytes, an intermediate byte and
   // a final byte. The near miss is the same text with no introducer.
   'dsh-dlp/control-sequence': { match: '\u001B[?25 h', miss: '[?25 h', action: 'report' },

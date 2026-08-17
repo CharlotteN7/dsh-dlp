@@ -161,14 +161,45 @@ export interface UnicodeRule {
   readonly ranges?: string
 }
 
-/** Build one class's run pattern from its ranges, so the two cannot drift apart. */
+/**
+ * Build one class's run pattern from its ranges, so the two cannot drift apart.
+ * @param id - the rule's identity.
+ * @param action - what the scan does with a match.
+ * @param ranges - the class's ranges as a character-class body.
+ * @param quantifier - applied to the class; the default matches a whole run.
+ * @param wholeRun - whether a match must be a complete run rather than part of a longer one.
+ * @returns the rule.
+ */
 function unicodeRule(
   id: string,
   action: UnicodeAction,
   ranges: string,
+  quantifier = '+',
+  wholeRun = false,
 ): UnicodeRule {
-  return { id, version: 1, severity: 'medium', action, ranges, pattern: new RegExp(`[${ranges}]+`, 'gu') }
+  const source = wholeRun
+    ? `(?<![${ranges}])[${ranges}]${quantifier}(?![${ranges}])`
+    : `[${ranges}]${quantifier}`
+  return { id, version: 1, severity: 'medium', action, ranges, pattern: new RegExp(source, 'gu') }
 }
+
+/** Variation-selector code points, shared by the isolated rule and the run rule. */
+const VARIATION_SELECTORS = String.raw`\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}`
+
+/**
+ * Consecutive variation selectors at which the run stops being glyph selection
+ * and starts being a payload.
+ *
+ * One selector picks a glyph: VS15/VS16 after a base character, one selector
+ * after one ideograph in an Ideographic Variation Sequence. Two in a row have
+ * no standard meaning — an emoji ZWJ sequence separates its selectors with a
+ * joiner, so a run stays at one — and four leaves no plausible reading but
+ * "these are bytes". GlassWorm encoded executable JavaScript one byte per
+ * selector across five waves, 35,800 installs and 300+ repositories, so a real
+ * payload is hundreds of selectors long and 4 is a conservative floor rather
+ * than a tight one.
+ */
+const VARIATION_SELECTOR_RUN = 4
 
 /**
  * One terminal control sequence: the full CSI form, not only the SGR colour
@@ -255,7 +286,10 @@ export const UNICODE_RULES: readonly UnicodeRule[] = [
   unicodeRule('dsh-dlp/unicode-zero-width', 'report', String.raw`\u{200B}-\u{200D}\u{2060}\u{FEFF}`),
   // Bidi marks, unlike the overrides above, appear in real right-to-left text.
   unicodeRule('dsh-dlp/unicode-bidi-mark', 'report', String.raw`\u{061C}\u{200E}\u{200F}`),
-  unicodeRule('dsh-dlp/unicode-variation-selector', 'report', String.raw`\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}`),
+  // An isolated selector is glyph selection and is left alone; a run of them
+  // is a byte string wearing the same code points.
+  unicodeRule('dsh-dlp/unicode-variation-selector', 'report', VARIATION_SELECTORS, `{1,${VARIATION_SELECTOR_RUN - 1}}`, true),
+  unicodeRule('dsh-dlp/unicode-variation-selector-run', 'strip', VARIATION_SELECTORS, `{${VARIATION_SELECTOR_RUN},}`),
   CONTROL_SEQUENCE_RULE,
 ] as const
 
@@ -270,7 +304,7 @@ const SEQUENCE_RULES = UNICODE_RULES.filter(rule => rule.ranges === undefined)
  * input with this pattern; the per-class patterns then run over the matched
  * runs only, which are a handful of characters each.
  */
-const UNICODE_RUN = new RegExp(`[${CHARACTER_RULES.map(rule => rule.ranges).join('')}]+`, 'gu')
+const UNICODE_RUN = new RegExp(`[${[...new Set(CHARACTER_RULES.map(rule => rule.ranges))].join('')}]+`, 'gu')
 
 /** One indicator match and what the caller should do with it. */
 export interface UnicodeFinding extends Detection {
