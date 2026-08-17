@@ -73,9 +73,63 @@ export const CREDENTIAL_PATH_RULES: readonly CredentialPathRule[] = [
   { id: 'dsh-dlp/path-pgpass', version: 1, pattern: /(^|\/)\.pgpass$/i },
   { id: 'dsh-dlp/path-mysql-config', version: 1, pattern: /(^|\/)\.my\.cnf$/i },
   { id: 'dsh-dlp/path-service-account', version: 1, pattern: /(^|\/)[^/]*service[._-]?account[^/]*\.json$/i },
+  // Coding-agent credential stores. IronWorm's 44 packages and SANDWORM_MODE
+  // name these verbatim; an `auth.json` under an agent's own directory is a
+  // token file whatever else the directory holds.
+  { id: 'dsh-dlp/path-agent-auth', version: 1, pattern: /(^|\/)\.?(codex|cursor|composer|windsurf|continue|aider|claude|gemini)\/auth\.json$/i },
+  // An MCP manifest carries each server's `env`, which is where its API keys
+  // are written.
+  { id: 'dsh-dlp/path-agent-mcp-config', version: 1, pattern: /(^|\/)\.(cursor|windsurf|continue|codex|claude|gemini)\/mcp\.json$/i },
+  // Cursor keeps session tokens in a SQLite state database rather than a
+  // credential file.
+  { id: 'dsh-dlp/path-editor-state-db', version: 1, pattern: /(^|\/)state\.vscdb(-journal|-wal|-shm)?$/i },
+  { id: 'dsh-dlp/path-macos-keychain', version: 1, pattern: /(^|\/)Library\/Keychains(\/|$)/i },
+  // A Terraform variables file is where provider credentials are written by
+  // convention, and state holds every provider's secrets in plaintext.
+  { id: 'dsh-dlp/path-terraform-vars', version: 1, pattern: /\.tfvars(\.json)?$/i },
+  { id: 'dsh-dlp/path-terraform-state', version: 1, pattern: /(^|\/)terraform\.tfstate(\.backup)?$/i },
   { id: 'dsh-dlp/path-keystore', version: 2, pattern: /\.(pem|p12|pfx|jks|keystore|key|asc|gpg)$/i },
   { id: 'dsh-dlp/path-credential-name', version: 1, pattern: new RegExp(String.raw`(^|\/)(?!.*\.(?:${CODE_EXTENSIONS})$)[^/]*(credentials?|secrets?|tokens?)([._-][^/]*)?$`, 'i') },
 ] as const
+
+/**
+ * Escape one literal path so it can anchor a regular expression.
+ * @param literal - the path to quote.
+ * @returns the same text with every metacharacter escaped.
+ */
+export function escapePathPattern(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
+}
+
+/**
+ * Credential-path rules anchored at the user's home directory, resolved at
+ * mount because the directory is not known until then.
+ *
+ * A coding agent's *home* configuration decides how every future session in
+ * every repository behaves: the Miasma worm's `SessionStart` hooks went into
+ * exactly these files. Writing one is never ordinary repository work, so it is
+ * on the floor. Reading one is — a user asking the agent why its own
+ * configuration behaves a certain way is a normal request — so the rule is
+ * `writes-only` rather than `every-call`, unlike the `auth.json` and `mcp.json`
+ * stores in {@link CREDENTIAL_PATH_RULES}, which hold nothing but credentials.
+ *
+ * The *repository-local* copies of these same file names are a different
+ * question with a different answer: they are edited legitimately and often, so
+ * they sit in the neutralizable `ask` tier rather than on the floor.
+ * @param home - the user's home directory.
+ * @returns rules appended after the built-in table.
+ */
+export function homeCredentialPathRules(home: string): readonly CredentialPathRule[] {
+  // `~` survives normalization as a root-anchored marker, so a home-relative
+  // spelling reaches the same rule as the absolute one.
+  const anchor = `(?:${escapePathPattern(home)}|/~)`
+  return [{
+    id: 'dsh-dlp/path-agent-home-settings',
+    version: 1,
+    enforcement: 'writes-only',
+    pattern: new RegExp(`^${anchor}/\\.(claude|gemini|codex|cursor|windsurf|continue)/settings[^/]*\\.json$`, 'i'),
+  }]
+}
 
 /**
  * Normalize one candidate path for matching: Windows separators become

@@ -10,7 +10,12 @@
 
 import { describe, expect, it } from 'vitest'
 import { SYNC_RULES, UNICODE_RULES, scanSync, scanUnicode, type UnicodeAction } from '../../src/detectors.ts'
-import { CREDENTIAL_PATH_RULES, matchCredentialPath, normalizeCandidatePath } from '../../src/paths.ts'
+import {
+  CREDENTIAL_PATH_RULES,
+  homeCredentialPathRules,
+  matchCredentialPath,
+  normalizeCandidatePath,
+} from '../../src/paths.ts'
 
 /** One rule's evidence: a string it must match, and a near one it must not. */
 interface Fixture {
@@ -235,6 +240,18 @@ const PATH_FIXTURES: Readonly<Record<string, Fixture>> = {
   'dsh-dlp/path-pgpass': { match: '/home/dev/.pgpass', miss: '/home/dev/bin/pg_dump.sh' },
   'dsh-dlp/path-mysql-config': { match: '/home/dev/.my.cnf', miss: '/home/dev/my.cnf.example' },
   'dsh-dlp/path-service-account': { match: '/srv/app/service-account.json', miss: '/srv/app/service-registry.json' },
+  'dsh-dlp/path-agent-auth': { match: '/home/dev/.codex/auth.json', miss: '/srv/app/src/auth.json' },
+  'dsh-dlp/path-agent-mcp-config': { match: '/home/dev/.cursor/mcp.json', miss: '/srv/app/.mcp.json' },
+  'dsh-dlp/path-editor-state-db': {
+    match: '/home/dev/.config/Cursor/User/globalStorage/state.vscdb',
+    miss: '/home/dev/.config/Cursor/User/globalStorage/storage.json',
+  },
+  'dsh-dlp/path-macos-keychain': {
+    match: '/Users/dev/Library/Keychains/login.keychain-db',
+    miss: '/Users/dev/Library/Preferences/com.apple.finder.plist',
+  },
+  'dsh-dlp/path-terraform-vars': { match: '/srv/infra/prod.tfvars', miss: '/srv/infra/main.tf' },
+  'dsh-dlp/path-terraform-state': { match: '/srv/infra/terraform.tfstate', miss: '/srv/infra/terraform.tfstate.example' },
   'dsh-dlp/path-keystore': { match: '/home/dev/certs/server.pem', miss: '/home/dev/certs/server.csr' },
   'dsh-dlp/path-credential-name': { match: '/home/dev/.vault-token', miss: '/home/dev/src/auth/token.ts' },
 }
@@ -266,4 +283,40 @@ describe('the credential-path table', () => {
       expect(matchCredentialPath(fixture?.miss ?? '')).toBeUndefined()
     },
   )
+})
+
+/** The home directory the rules under test are anchored at. */
+const HOME = '/home/dev'
+
+const HOME_PATH_FIXTURES: Readonly<Record<string, Fixture>> = {
+  // Home-level agent configuration decides how every future session behaves;
+  // the repository-local copy of the same file name is edited legitimately and
+  // is handled by the `ask` tier instead.
+  'dsh-dlp/path-agent-home-settings': {
+    match: `${HOME}/.claude/settings.json`,
+    miss: '/srv/repo/.claude/settings.json',
+  },
+}
+
+describe('the home-anchored credential-path rules', () => {
+  const rules = homeCredentialPathRules(HOME)
+
+  it('carries a fixture for every rule, and no fixture for a rule that is gone', () => {
+    expect(Object.keys(HOME_PATH_FIXTURES).sort()).toEqual(rules.map(rule => rule.id).sort())
+  })
+
+  it.each(rules.map(rule => [rule.id, rule] as const))('%s matches under the home directory only', (id, rule) => {
+    const fixture = HOME_PATH_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+    expect(matchCredentialPath(fixture?.match ?? '', rules)?.id).toBe(id)
+    expect(matchCredentialPath(fixture?.miss ?? '', rules)).toBeUndefined()
+    // Every rule here is lifted for a tool that cannot change anything: the
+    // files are ordinary reading and dangerous writing.
+    expect(rule.enforcement).toBe('writes-only')
+  })
+
+  it('matches the home-relative spelling of the same path', () => {
+    expect(matchCredentialPath('~/.gemini/settings.json', rules)?.id).toBe('dsh-dlp/path-agent-home-settings')
+  })
 })

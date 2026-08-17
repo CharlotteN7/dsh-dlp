@@ -4,6 +4,8 @@
  * about what it denies.
  */
 
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { evaluateGuard, safeEvaluateGuard } from '../../src/guard.ts'
 import { resolvePolicy, type Config } from '../../src/policy.ts'
@@ -62,6 +64,44 @@ describe('credential-path denial', () => {
     const verdict = evaluateGuard({ name: 'grep', arguments: { path: '/srv/app/.env' } }, policy, hasher)
 
     expect(verdict?.kind).toBe('credential-path')
+  })
+
+  it.each([
+    ['a Codex token file', '~/.codex/auth.json', 'dsh-dlp/path-agent-auth'],
+    ['a Cursor token file', '~/Cursor/auth.json', 'dsh-dlp/path-agent-auth'],
+    ['a Cursor MCP manifest, whose server env holds its keys', '~/.cursor/mcp.json', 'dsh-dlp/path-agent-mcp-config'],
+    ['Cursor\'s session state database', '~/.config/Cursor/User/globalStorage/state.vscdb', 'dsh-dlp/path-editor-state-db'],
+    ['a macOS keychain', '~/Library/Keychains/login.keychain-db', 'dsh-dlp/path-macos-keychain'],
+    ['a Terraform variables file', '/srv/infra/prod.tfvars', 'dsh-dlp/path-terraform-vars'],
+    ['Terraform state, which holds provider secrets in plaintext', '/srv/infra/terraform.tfstate', 'dsh-dlp/path-terraform-state'],
+  ])('denies a read of %s', (_label, candidate, ruleId) => {
+    // IronWorm and SANDWORM_MODE name these paths verbatim.
+    const verdict = evaluateGuard({ name: 'read', arguments: { file_path: candidate } }, policy, hasher)
+
+    expect(verdict?.kind).toBe('credential-path')
+    expect(verdict?.spans[0]?.ruleId).toBe(ruleId)
+  })
+
+  it('denies a write of the home agent settings and still allows reading them', () => {
+    // Home-level agent configuration decides how every future session behaves,
+    // which is where the Miasma worm put its SessionStart hooks. Reading it is
+    // ordinary work — a user asking why their agent behaves a certain way — so
+    // the rule is lifted for a tool that cannot change anything.
+    const settings = { file_path: join(homedir(), '.claude', 'settings.json') }
+
+    expect(evaluateGuard({ name: 'write', arguments: settings }, policy, hasher)?.spans[0]?.ruleId)
+      .toBe('dsh-dlp/path-agent-home-settings')
+    expect(evaluateGuard({ name: 'read', arguments: settings }, policy, hasher)).toBeUndefined()
+  })
+
+  it('leaves the repository-local copy of an agent settings file to the ask tier', () => {
+    // A developer edits this one; a floor that denies it is a floor that gets
+    // switched off.
+    expect(evaluateGuard(
+      { name: 'write', arguments: { file_path: '/srv/repo/.claude/settings.json' } },
+      policy,
+      hasher,
+    )).toBeUndefined()
   })
 
   it('tells the model what to do instead', () => {

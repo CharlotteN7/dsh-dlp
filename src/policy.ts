@@ -16,12 +16,13 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import z from '@deepseek-ai/schemastery'
 import { SYNC_RULES, severityRank, stripControlSequences, type Severity, type SyncRule } from './detectors.ts'
 import { resolveDshHome } from './home.ts'
-import { CREDENTIAL_PATH_RULES, type CredentialPathRule } from './paths.ts'
+import { CREDENTIAL_PATH_RULES, escapePathPattern, homeCredentialPathRules, type CredentialPathRule } from './paths.ts'
 
 /** Deployment configuration, validated from `cordis.yml`. */
 export interface Config {
@@ -301,11 +302,6 @@ export function loadRepoPolicy(path: string): RepoPolicyLoad {
   }
 }
 
-/** Escape one literal path so it can anchor a regular expression. */
-function escapePattern(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
-}
-
 /**
  * Deny rules protecting this plugin's own state and the harness home.
  *
@@ -328,10 +324,10 @@ function escapePattern(literal: string): string {
  * @returns rules appended after the built-in table.
  */
 function selfProtectionRules(config: Config, dshHome: string): CredentialPathRule[] {
-  const home = escapePattern(resolve(dshHome))
+  const home = escapePathPattern(resolve(dshHome))
   return [
-    { id: 'dsh-dlp/path-own-redaction-key', version: 1, pattern: new RegExp(`^${escapePattern(resolve(config.redactionKeyFile))}$`, 'i') },
-    { id: 'dsh-dlp/path-own-audit-log', version: 1, pattern: new RegExp(`^${escapePattern(resolve(config.auditLog))}$`, 'i') },
+    { id: 'dsh-dlp/path-own-redaction-key', version: 1, pattern: new RegExp(`^${escapePathPattern(resolve(config.redactionKeyFile))}$`, 'i') },
+    { id: 'dsh-dlp/path-own-audit-log', version: 1, pattern: new RegExp(`^${escapePathPattern(resolve(config.auditLog))}$`, 'i') },
     { id: 'dsh-dlp/path-dsh-sessions', version: 1, pattern: new RegExp(`^${home}/sessions(/|$)`, 'i') },
     { id: 'dsh-dlp/path-dsh-home', version: 2, enforcement: 'writes-only', pattern: new RegExp(`^${home}(/|$)`, 'i') },
   ]
@@ -348,6 +344,7 @@ export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy
   return {
     credentialPathRules: [
       ...CREDENTIAL_PATH_RULES,
+      ...homeCredentialPathRules(resolve(homedir())),
       ...selfProtectionRules(config, resolveDshHome()),
       ...repo?.addCredentialPaths ?? [],
     ],

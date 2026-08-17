@@ -328,6 +328,22 @@ directories (but not `.env.example`), anything under `.ssh/`,
 documentation extensions are excluded from that last rule, so `src/auth/token.ts` stays
 readable.
 
+**Coding-agent and infrastructure credential stores**, which IronWorm's 44 packages and
+SANDWORM_MODE name verbatim: an `auth.json` under `.codex/`, `Cursor/`, `.composer/`,
+`.windsurf/`, `.continue/`, `.aider/`, `.claude/` or `.gemini/`; an `mcp.json` under any of the
+same directories, because an MCP manifest carries each server's `env` and that is where its API
+keys are written; Cursor's `state.vscdb` session database; anything under `Library/Keychains/`;
+`*.tfvars` and `terraform.tfstate`, which hold provider credentials in plaintext.
+
+**A home-level agent settings file is denied for writing only.** `~/.claude/settings.json`,
+`~/.gemini/settings.json` and the equivalents for Codex, Cursor, Windsurf and Continue decide
+how every future session in every repository behaves — this is where the Miasma worm put its
+`SessionStart` hooks — so writing one is on the floor. Reading one is ordinary work, since a
+user asking why their agent behaves a certain way is a normal request, so the rule is lifted for
+a tool that provably cannot change anything. The **repository-local** copies of those same file
+names are a different question with a different answer: see
+[behaviour-changing config paths](#behaviour-changing-config-paths) below.
+
 Also denied for every tool: this plugin's own `redactionKeyFile` and `auditLog`.
 
 **`$DSH_HOME` is split by direction.** Every *write* under the harness home is denied, for

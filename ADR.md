@@ -242,6 +242,18 @@ because a prompt-injected agent editing a profile mounts an arbitrary plugin; re
 only for the credential material inside it (`.credentials.yaml`, `sessions/**`, `.env`,
 `*.key`, and our own two files), which the built-in table already covered by filename.
 
+The coding-agent entries added later follow the same reasoning applied to a newer set of files.
+An `auth.json` or an `mcp.json` under an agent's own directory holds nothing but credentials —
+an MCP manifest's `env` is where a server's API keys live — so both are `every-call`, as are
+Cursor's `state.vscdb`, `Library/Keychains/**`, `*.tfvars` and `terraform.tfstate`.
+
+A `settings.json` under `~/.claude` or `~/.gemini` is not that. It is configuration, and a user
+asking the agent why their own agent behaves a certain way is an ordinary request, so it is
+`writes-only`. It is anchored at the *home directory*, resolved at mount for the same reason
+`$DSH_HOME` is: the repository-local copy of that file name is edited legitimately and often,
+and putting it on an unoverridable floor is how a floor gets switched off. The repository-local
+copies are governed by the `ask` tier instead (§18).
+
 A rule therefore carries an `enforcement` field, and `writes-only` is lifted for a tool named
 in `READ_ONLY_TOOLS` — an allowlist of query-only tools with the same deny-by-default tail as
 `LOCAL_TOOLS`. A shell is not on it: a shell that can `cat` a profile can also rewrite it, and
