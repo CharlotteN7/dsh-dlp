@@ -368,6 +368,44 @@ UTS #39 confusables are not attempted. A homoglyph is a visible, legitimately-en
 character, detecting it needs a data table, and it defeats every rule in this package. README
 says so instead of implying coverage.
 
+### Terminal control sequences split by lane, not by class
+
+CVE-2026-35651: ANSI sequences in tool titles reached approval prompts **and permission logs**,
+so a malicious tool could spoof what the human saw when approving *and* forge the record of it.
+The upstream fix was explicitly "strip full CSI, not just SGR". CVE-2026-50642 is the same shape
+in filenames and diff metadata. Separately, an `OSC 7` in model output makes a terminal resolve a
+host with no tool call at all.
+
+The class does not fit the per-class strip/report split, because whether it is safe to replace
+depends on where the string is going:
+
+- **Tool-result text: `report`.** `git diff`, `rg` and `pytest` colourise by default. A `strip`
+  action here would rewrite the output of half the commands an agent runs, and the cost of that
+  is the plugin being switched off.
+- **Anything reaching an audit record: `strip`.** `AuditSink.write` replaces every sequence in
+  every string of a record before serialising. This is not redundant with JSON escaping: the
+  file holds the six characters `\u001b`, but `dsh-dlp report`, `jq -r` and any log viewer
+  parse that back into a live escape, and the strings in a record are not all ours — a tool's
+  registered name comes from whatever registered it, including an MCP server.
+- **Model-facing and approval-facing reasons.** A denial quotes the tool name through
+  `JSON.stringify`, which escapes the byte, and otherwise quotes only rule ids and hex hashes.
+  Rule ids can come from the attacker-controlled repo-local tier, so one carrying a control
+  sequence invalidates that file at parse time rather than being sanitised later — the same
+  fail-loud treatment the rest of that parser gives.
+
+The pattern is the full CSI form (parameter bytes, intermediate bytes, one final byte), the
+string-introducer families (OSC, DCS, SOS, PM, APC) with their bodies, every other escape
+sequence, and the 8-bit C1 equivalents. An unterminated string introducer matches to the end of
+the input, because that is exactly how much of the display it swallows on a real terminal.
+
+Replacement is a visible marker rather than deletion: the lanes that strip are the ones an
+operator reads as evidence, and silently deleting the bytes would hide that a forgery was
+attempted. `\r`, `\b` and `\f` are deliberately left alone — they have ordinary uses in tool
+output and `JSON.stringify` escapes them in the sink.
+
+The class cannot be expressed as a character range, so `UnicodeRule.ranges` is now optional: a
+rule without ranges is scanned over the whole input instead of within a combined-class run.
+
 ## 14. The output schema is checked before a redacted value is handed back
 
 `ctx.tools.get(name, scope)` returns the live `ToolDefinition`, and `exec.agent` is the scope

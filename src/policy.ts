@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import z from '@deepseek-ai/schemastery'
-import { SYNC_RULES, severityRank, type Severity, type SyncRule } from './detectors.ts'
+import { SYNC_RULES, severityRank, stripControlSequences, type Severity, type SyncRule } from './detectors.ts'
 import { resolveDshHome } from './home.ts'
 import { CREDENTIAL_PATH_RULES, type CredentialPathRule } from './paths.ts'
 
@@ -179,6 +179,14 @@ function parseCredentialPathEntry(node: unknown, index: number): CredentialPathR
   }
   if (typeof id !== 'string' || id.length === 0) {
     throw new PolicyError(`addCredentialPaths[${index}].id must be a non-empty string`)
+  }
+  // A rule id is quoted verbatim in a model-facing denial and in every audit
+  // record the rule produces, and this file is attacker-controlled.
+  if (stripControlSequences(id) !== id) {
+    throw new PolicyError(
+      `addCredentialPaths[${index}].id carries a terminal control sequence; a rule id is quoted in a denial`
+      + ' the user reads and in the audit record, so it may not rewrite what is on screen',
+    )
   }
   if (typeof pattern !== 'string' || pattern.length === 0) {
     throw new PolicyError(`addCredentialPaths[${index}].pattern must be a non-empty string`)

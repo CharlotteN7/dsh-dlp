@@ -66,6 +66,31 @@ describe('the audit sink', () => {
     expect(text).toContain('abc123abc123')
   })
 
+  it('strips a terminal control sequence out of every string it writes', () => {
+    // `JSON.stringify` escapes the byte in the file, but every consumer parses
+    // it back into a live escape: `dsh-dlp report` prints the tool name, and a
+    // tool named with a CSI sequence would rewrite the line describing it.
+    const file = join(home, 'control-sequences.jsonl')
+    const sink = new AuditSink(file, () => { throw new Error('unexpected failure') })
+    const forged = '\u001B[1A\u001B[2Kread'
+
+    sink.write({
+      v: RECORD_VERSION,
+      time: '2026-08-15T00:00:00.000Z',
+      kind: 'execution-mutation',
+      decisionId: newDecisionId(),
+      tool: forged,
+      originalTool: 'read',
+      unicode: { '\u001B]8;;https://exfil.invalid': 1 },
+    })
+
+    const row = JSON.parse(readFileSync(file, 'utf8').trim()) as Record<string, unknown>
+
+    expect(JSON.stringify(row)).not.toContain('\u001B')
+    expect(row['tool']).toBe('[REDACTED:dsh-dlp:control-sequence][REDACTED:dsh-dlp:control-sequence]read')
+    expect(Object.keys(row['unicode'] as object)).toEqual(['[REDACTED:dsh-dlp:control-sequence]'])
+  })
+
   it('reports a write failure instead of turning it into a denial', () => {
     const onFailure = vi.fn()
     const sink = new AuditSink(join(home, 'no-such-directory', 'audit.jsonl'), onFailure)

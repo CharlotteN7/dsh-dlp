@@ -17,6 +17,7 @@
 
 import { appendFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { stripControlSequences } from './detectors.ts'
 import type { RedactedSpan } from './redaction.ts'
 
 declare const decisionIdBrand: unique symbol
@@ -91,6 +92,28 @@ export interface AuditRecord {
   readonly host?: string
 }
 
+/**
+ * One record with every string cleaned of terminal control sequences.
+ *
+ * A record carries strings this plugin did not author — a tool's registered
+ * name, a call id, a rule id from the repo-local policy tier — and a reader
+ * gets them back unescaped: `JSON.stringify` writes `\u001b` to the file, but
+ * `dsh-dlp report`, `jq -r` and any log viewer parse that back into a live
+ * escape. A tool named with a CSI sequence could then overwrite the line
+ * describing it, which is the forged-audit-record half of CVE-2026-35651.
+ * Cleaning here means every consumer of the file gets the cleaned form.
+ * @param value - any part of a record.
+ * @returns the same structure with control sequences replaced.
+ */
+function cleaned(value: unknown): unknown {
+  if (typeof value === 'string') return stripControlSequences(value)
+  if (Array.isArray(value)) return value.map(cleaned)
+  if (typeof value === 'object' && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [stripControlSequences(key), cleaned(item)]))
+  }
+  return value
+}
+
 /** Append-only JSONL sink for this plugin's decisions. */
 export class AuditSink {
   readonly #path: string
@@ -117,7 +140,7 @@ export class AuditSink {
    */
   write(record: AuditRecord): void {
     try {
-      appendFileSync(this.#path, `${JSON.stringify(record)}\n`)
+      appendFileSync(this.#path, `${JSON.stringify(cleaned(record))}\n`)
     } catch (error: unknown) {
       this.#onFailure(error)
     }

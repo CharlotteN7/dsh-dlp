@@ -116,6 +116,13 @@ describe('a malformed repo-local policy', () => {
     expect(() => parseRepoPolicy('v: 1\naddCredentialPaths:\n  - pattern: x\n')).toThrow(/id must be/)
   })
 
+  it('rejects a credential-path entry whose id carries a terminal control sequence', () => {
+    // The id is quoted verbatim in the denial the user reads and in every
+    // audit record the rule produces, and this file is attacker-controlled.
+    expect(() => parseRepoPolicy('v: 1\naddCredentialPaths:\n  - id: "acme/\\u001B[2Kok"\n    pattern: x\n'))
+      .toThrow(/terminal control sequence/)
+  })
+
   it('rejects a credential-path entry missing its pattern', () => {
     expect(() => parseRepoPolicy('v: 1\naddCredentialPaths:\n  - id: x\n')).toThrow(/pattern must be/)
   })

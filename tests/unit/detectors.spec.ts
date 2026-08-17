@@ -9,6 +9,7 @@ import {
   scanUnicode,
   scanWithSecretlint,
   severityRank,
+  stripControlSequences,
   SYNC_RULES,
 } from '../../src/detectors.ts'
 
@@ -208,6 +209,60 @@ describe('invisible and direction-changing characters', () => {
       'dsh-dlp/unicode-bidi-override',
     ])
     expect(detections.every(detection => detection.exact === true)).toBe(true)
+  })
+
+  it.each([
+    ['an SGR colour run', '\u001B[31m'],
+    ['a cursor-movement CSI', '\u001B[2A'],
+    ['a CSI with intermediate bytes, which an SGR-only rule misses', '\u001B[?25 h'],
+    ['an OSC 8 hyperlink, terminated by BEL', '\u001B]8;;https://exfil.invalid\u0007'],
+    ['an OSC terminated by ST', '\u001B]0;forged title\u001B\\'],
+    ['a DCS string', '\u001BP0;1|17/ab\u001B\\'],
+    ['an 8-bit CSI', '\u009B31m'],
+  ])('reports %s as one control-sequence finding', (_label, sequence) => {
+    const findings = scanUnicode(`ok ${sequence} done`)
+
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toMatchObject({
+      ruleId: 'dsh-dlp/control-sequence',
+      action: 'report',
+      start: 'ok '.length,
+      end: 'ok '.length + sequence.length,
+    })
+  })
+
+  it('swallows the tail an unterminated OSC would swallow on a terminal', () => {
+    const text = 'ok \u001B]7;file://exfil.invalid/ and everything after it'
+
+    const findings = scanUnicode(text)
+
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toMatchObject({ ruleId: 'dsh-dlp/control-sequence', start: 'ok '.length, end: text.length })
+  })
+
+  it('reports an escape that introduces nothing', () => {
+    // Only at the end of a string: `ESC SP d` is itself a complete sequence,
+    // so a trailing escape is the one form with nothing to consume.
+    expect(scanUnicode('ok \u001B')).toMatchObject([{ ruleId: 'dsh-dlp/control-sequence', start: 3, end: 4 }])
+  })
+
+  it('leaves colourised tool output in place and only counts it', () => {
+    // `git diff`, `rg` and `pytest` colourise by default. Replacing those runs
+    // would corrupt the result of half the commands an agent runs.
+    const colourised = '\u001B[32m+ added line\u001B[0m'
+
+    expect(scanSync(colourised).detections).toEqual([])
+    expect(countUnicodeIndicators(colourised)).toEqual({ 'dsh-dlp/control-sequence': 2 })
+  })
+
+  it('replaces every control sequence on the lanes that must not carry them', () => {
+    const forged = 'read\u001B[1A\u001B[2Kwrite'
+
+    const stripped = stripControlSequences(forged)
+
+    expect(stripped).not.toContain('\u001B')
+    expect(stripped).toBe('read[REDACTED:dsh-dlp:control-sequence][REDACTED:dsh-dlp:control-sequence]write')
+    expect(stripControlSequences('ordinary text')).toBe('ordinary text')
   })
 
   it('stays below the severity at which the guard floor denies', () => {

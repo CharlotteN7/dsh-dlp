@@ -463,6 +463,7 @@ session titles — and never on the tool-result path.
 | Zero-width | `U+200B–U+200D`, `U+2060`, `U+FEFF` | counted only |
 | Bidi marks | `U+061C`, `U+200E–U+200F` | counted only |
 | Variation selectors | `U+FE00–U+FE0F`, `U+E0100–U+E01EF` | counted only |
+| Terminal control sequences | CSI, OSC, DCS, SOS, PM, APC, other `ESC` forms, C1 `U+0080–U+009F` | counted in tool results, **replaced in the audit sink** |
 
 The first two have no legitimate use in tool output — the Tags block is a full invisible ASCII
 alphabet, which is what makes it the standard carrier for a hidden instruction. The last three
@@ -474,6 +475,22 @@ Every class is `medium`, below the severity at which the guard floor denies, so 
 character is never turned into a denial. A replaced run becomes an ordinary placeholder and,
 unlike a secret, is replaced exactly: an invisible character is not widened to its surrounding
 delimiters, so the visible word it hid inside survives.
+
+**Terminal control sequences are split by lane rather than by class.** A tool result carrying
+SGR colour codes is the normal output of `git diff`, `rg` and `pytest`, so on that lane the
+class is counted and left alone. On the lane that ends in an audit record it is **replaced**
+with `[REDACTED:dsh-dlp:control-sequence]`, because a record is evidence and evidence must not
+be able to rewrite itself: `JSON.stringify` escapes the byte in the file, but `dsh-dlp report`,
+`jq -r` and every log viewer parse it back into a live escape, so a tool registered under a name
+containing `ESC [ 1 A ESC [ 2 K` could overwrite the audit line describing it. The whole CSI
+form is matched, not the SGR subset, along with OSC, DCS, SOS, PM, APC, the other escape forms
+and the 8-bit C1 controls; an unterminated OSC is matched to the end of the string, because that
+is how much of the display it would swallow. A repo-local `policyFile` whose rule `id` carries
+one is rejected outright, since a rule id is quoted in the denial the user reads.
+
+Not covered: a bare `\r`, `\b` or `\f` can still overprint a line on a terminal. Those have
+ordinary uses in tool output and are escaped by `JSON.stringify` in the sink; the escape-driven
+forms above are the ones with no benign use in a record.
 
 **A homoglyph defeats all of this**, and every other rule in this plugin. A Cyrillic `а` in
 `аdmin` is a normal, visible, legitimately-encoded character; detecting it means UTS #39

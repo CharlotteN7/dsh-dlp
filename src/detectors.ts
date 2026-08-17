@@ -132,8 +132,14 @@ export const SYNC_RULES: readonly SyncRule[] = [
  *
  * `strip` classes have no legitimate use in tool output, so they are replaced
  * like any other detection. `report` classes do: `U+200D` joins an emoji
- * sequence and a variation selector chooses a glyph, so replacing them would
- * corrupt ordinary text. They are counted and never rewritten.
+ * sequence, a variation selector chooses a glyph, and a CSI sequence colours
+ * the output of `git diff`, so replacing them would corrupt ordinary text.
+ * They are counted and never rewritten.
+ *
+ * The split is per class and per lane both: {@link stripControlSequences}
+ * applies the `strip` treatment to a `report` class on the audit and
+ * approval-facing lanes, where colour buys nothing and a forged record costs
+ * everything.
  */
 export type UnicodeAction = 'strip' | 'report'
 
@@ -145,8 +151,14 @@ export interface UnicodeRule {
   readonly action: UnicodeAction
   /** Global, unicode-flagged, matching one run of this class. */
   readonly pattern: RegExp
-  /** The class's ranges as a character-class body, for the combined run pattern. */
-  readonly ranges: string
+  /**
+   * The class's ranges as a character-class body, for the combined run pattern.
+   *
+   * Absent for a class whose matches are not a run of one character class —
+   * a terminal control sequence has an ASCII body — which is scanned over the
+   * whole input instead of within a combined run.
+   */
+  readonly ranges?: string
 }
 
 /** Build one class's run pattern from its ranges, so the two cannot drift apart. */
@@ -159,8 +171,67 @@ function unicodeRule(
 }
 
 /**
+ * One terminal control sequence: the full CSI form, not only the SGR colour
+ * subset, plus the string-introducer families and the 8-bit C1 equivalents.
+ *
+ * Each alternative in order: an OSC/DCS/SOS/PM/APC introducer and its body up
+ * to a string terminator that may never arrive; a complete CSI — parameter
+ * bytes, intermediate bytes, one final byte; any other escape sequence; and a
+ * lone escape or C1 control that introduces nothing.
+ *
+ * Terminating at end of input matters: an unterminated OSC swallows everything
+ * a terminal prints after it, which is the whole trick, so the tail is part of
+ * the match rather than a miss.
+ */
+const CONTROL_SEQUENCE = [
+  String.raw`(?:\u001B[\]P^_X]|[\u0090\u0098\u009D\u009E\u009F])[\s\S]*?(?:\u0007|\u001B\\|\u009C|$)`,
+  String.raw`(?:\u001B\[|\u009B)[\u0030-\u003F]*[\u0020-\u002F]*[\u0040-\u007E]`,
+  String.raw`\u001B[\u0020-\u002F]*[\u0030-\u007E]`,
+  String.raw`[\u001B\u0080-\u009F]`,
+].join('|')
+
+/**
+ * Text substituted for a stripped control sequence. Visible on purpose: the
+ * lanes that strip are the ones an operator reads as evidence, and silently
+ * deleting the bytes would hide that a forgery was attempted.
+ */
+export const CONTROL_SEQUENCE_PLACEHOLDER = '[REDACTED:dsh-dlp:control-sequence]'
+
+/**
+ * Remove every terminal control sequence from one string.
+ *
+ * This is the `strip` half of {@link CONTROL_SEQUENCE_RULE}, applied on the
+ * lanes that must never carry forgeable bytes: an audit record and the strings
+ * an operator or an approval prompt reads back. Ordinary tool-result text takes
+ * the `report` half instead, because `git diff`, `rg` and `pytest` legitimately
+ * colourise their output.
+ * @param text - the string to clean.
+ * @returns the string with each control sequence replaced by a visible marker.
+ */
+export function stripControlSequences(text: string): string {
+  return text.replace(new RegExp(CONTROL_SEQUENCE, 'gu'), CONTROL_SEQUENCE_PLACEHOLDER)
+}
+
+/**
+ * Terminal control sequences in ordinary text.
+ *
+ * `report` rather than `strip`, deliberately: a tool result carrying SGR colour
+ * codes is the normal output of half the commands an agent runs, and replacing
+ * them would corrupt every one of those results. What the class buys on that
+ * lane is the count in the audit record.
+ */
+const CONTROL_SEQUENCE_RULE: UnicodeRule = {
+  id: 'dsh-dlp/control-sequence',
+  version: 1,
+  severity: 'medium',
+  action: 'report',
+  pattern: new RegExp(CONTROL_SEQUENCE, 'gu'),
+}
+
+/**
  * Character classes that hide text from the reader while the model still reads
- * it, verified against the Unicode character database.
+ * it, verified against the Unicode character database, plus the terminal
+ * control sequences that show the reader something other than what is there.
  *
  * Every class is `medium`. These are injection *indicators*, not credentials:
  * the guard floor denies at `high` and above, so an argument carrying one is
@@ -185,14 +256,21 @@ export const UNICODE_RULES: readonly UnicodeRule[] = [
   // Bidi marks, unlike the overrides above, appear in real right-to-left text.
   unicodeRule('dsh-dlp/unicode-bidi-mark', 'report', String.raw`\u{061C}\u{200E}\u{200F}`),
   unicodeRule('dsh-dlp/unicode-variation-selector', 'report', String.raw`\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}`),
+  CONTROL_SEQUENCE_RULE,
 ] as const
 
+/** Classes whose matches are a run of one character class. */
+const CHARACTER_RULES = UNICODE_RULES.filter(rule => rule.ranges !== undefined)
+
+/** Classes whose matches have an ASCII body and are scanned over the whole input. */
+const SEQUENCE_RULES = UNICODE_RULES.filter(rule => rule.ranges === undefined)
+
 /**
- * One run of any indicator class. The scan is a single pass over the input
- * with this pattern; the per-class patterns then run over the matched runs
- * only, which are a handful of characters each.
+ * One run of any character-class indicator. The scan is a single pass over the
+ * input with this pattern; the per-class patterns then run over the matched
+ * runs only, which are a handful of characters each.
  */
-const UNICODE_RUN = new RegExp(`[${UNICODE_RULES.map(rule => rule.ranges).join('')}]+`, 'gu')
+const UNICODE_RUN = new RegExp(`[${CHARACTER_RULES.map(rule => rule.ranges).join('')}]+`, 'gu')
 
 /** One indicator match and what the caller should do with it. */
 export interface UnicodeFinding extends Detection {
@@ -210,20 +288,23 @@ export interface UnicodeFinding extends Detection {
  */
 export function scanUnicode(text: string): UnicodeFinding[] {
   const findings: UnicodeFinding[] = []
+  const found = (rule: UnicodeRule, start: number, length: number): void => {
+    findings.push({
+      ruleId: rule.id,
+      ruleVersion: rule.version,
+      severity: rule.severity,
+      start,
+      end: start + length,
+      exact: true,
+      action: rule.action,
+    })
+  }
+  for (const rule of SEQUENCE_RULES) {
+    for (const match of text.matchAll(rule.pattern)) found(rule, match.index, match[0].length)
+  }
   for (const run of text.matchAll(UNICODE_RUN)) {
-    for (const rule of UNICODE_RULES) {
-      for (const match of run[0].matchAll(rule.pattern)) {
-        const start = run.index + match.index
-        findings.push({
-          ruleId: rule.id,
-          ruleVersion: rule.version,
-          severity: rule.severity,
-          start,
-          end: start + match[0].length,
-          exact: true,
-          action: rule.action,
-        })
-      }
+    for (const rule of CHARACTER_RULES) {
+      for (const match of run[0].matchAll(rule.pattern)) found(rule, run.index + match.index, match[0].length)
     }
   }
   findings.sort(byPosition)
