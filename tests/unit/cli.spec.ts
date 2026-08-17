@@ -88,6 +88,28 @@ describe('reading one audit line', () => {
     expect(record?.sessionId).toBeUndefined()
   })
 
+  it('reads the rule of a decision that has no matched region, which every ask is', () => {
+    const record = parseRecord(line({
+      time: '2026-08-15T10:00:00.000Z',
+      kind: 'pre-execute-ask',
+      tool: 'write',
+      ruleId: 'dsh-dlp/config-ci-workflow',
+    }))
+
+    expect(record?.ruleIds).toEqual(['dsh-dlp/config-ci-workflow'])
+  })
+
+  it('names a top-level rule ahead of the spans, when a record carries both', () => {
+    const record = parseRecord(line({
+      time: '2026-08-15T10:00:00.000Z',
+      kind: 'result-redaction',
+      ruleId: 'dsh-dlp/config-ci-workflow',
+      spans: [{ ruleId: 'dsh-dlp/slack-token' }],
+    }))
+
+    expect(record?.ruleIds).toEqual(['dsh-dlp/config-ci-workflow', 'dsh-dlp/slack-token'])
+  })
+
   it.each([
     ['a torn final append', '{"kind":"guard-deny"'],
     ['a line that is not an object', '"guard-deny"'],

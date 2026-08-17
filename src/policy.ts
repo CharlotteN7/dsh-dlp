@@ -44,6 +44,12 @@ export interface Config {
   remoteImageNeutralization: boolean
   /** Whether telemetry's `session.cwd` attribute is replaced with a keyed hash. */
   redactTelemetryWorkspacePaths: boolean
+  /**
+   * Whether a write to a behaviour-changing config path asks the user first.
+   * Needs an approval service; without one the tier abstains rather than
+   * letting an `ask` degrade into a denial.
+   */
+  configWriteAsk: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -56,6 +62,7 @@ export const Config: z<Config> = z.object({
   telemetryRedaction: z.boolean().default(true),
   remoteImageNeutralization: z.boolean().default(true),
   redactTelemetryWorkspacePaths: z.boolean().default(true),
+  configWriteAsk: z.boolean().default(true),
 })
 
 /** Config toggles a repo-local policy may switch on, and never off. */
@@ -65,6 +72,7 @@ const ENABLEABLE = [
   'telemetryRedaction',
   'remoteImageNeutralization',
   'redactTelemetryWorkspacePaths',
+  'configWriteAsk',
 ] as const
 
 /** One toggle name a repo-local policy may name in `enable`. */
@@ -95,6 +103,7 @@ export interface ResolvedPolicy {
   readonly telemetryRedaction: boolean
   readonly remoteImageNeutralization: boolean
   readonly redactTelemetryWorkspacePaths: boolean
+  readonly configWriteAsk: boolean
 }
 
 /** Thrown when a policy file is malformed or attempts to loosen the policy. */
@@ -359,5 +368,6 @@ export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy
     telemetryRedaction: enabled('telemetryRedaction'),
     remoteImageNeutralization: enabled('remoteImageNeutralization'),
     redactTelemetryWorkspacePaths: enabled('redactTelemetryWorkspacePaths'),
+    configWriteAsk: enabled('configWriteAsk'),
   }
 }

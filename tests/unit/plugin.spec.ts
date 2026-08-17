@@ -5,7 +5,7 @@
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
@@ -141,6 +141,7 @@ function mount(
     telemetryRedaction: true,
     remoteImageNeutralization: true,
     redactTelemetryWorkspacePaths: true,
+    configWriteAsk: true,
     ...overrides,
   })
   const records = (): Record<string, unknown>[] => {
@@ -298,8 +299,138 @@ describe('the breadth tier registration', () => {
 
   it('is absent when the deployment turns it off', () => {
     // The mutation snapshot listener stays: it is registered whatever the
-    // breadth tier is set to, and it is the first of the two.
-    expect(mount({ breadthTier: false }).listeners.get('tools/pre-execute')).toHaveLength(1)
+    // other two tiers are set to, and it is the first of the three.
+    expect(mount({ breadthTier: false, configWriteAsk: false }).listeners.get('tools/pre-execute')).toHaveLength(1)
+  })
+
+  it('is the last pre-execute listener, so the ask tier never hides its denial', () => {
+    // Registration order is execution order and each listener sees what the
+    // rest of the chain settled on, so the tier that can only ask must be
+    // registered ahead of the tier that can deny.
+    const plugin = mount()
+
+    expect(plugin.listeners.get('tools/pre-execute')).toHaveLength(3)
+    expect(breadthTierListener(plugin)).toBe(plugin.listeners.get('tools/pre-execute')?.[2])
+  })
+})
+
+describe('the config-write ask tier', () => {
+  /** An approval service, which the registry needs before an `ask` can be granted. */
+  const approval = { services: { approval: {} } }
+
+  /** The ask tier's listener, registered between the snapshot and the breadth tier. */
+  function askListener(plugin: StubContext): (
+    exec: ToolExecution,
+    next: () => Promise<PreToolDecision>,
+  ) => Promise<PreToolDecision> {
+    return plugin.listeners.get('tools/pre-execute')?.[1] as (
+      exec: ToolExecution,
+      next: () => Promise<PreToolDecision>,
+    ) => Promise<PreToolDecision>
+  }
+
+  it.each([
+    ['a session hook in agent settings', { file_path: '/srv/repo/.claude/settings.json' }, 'dsh-dlp/config-agent-settings'],
+    ['a hook script', { file_path: '/srv/repo/.claude/hooks/session-start.sh' }, 'dsh-dlp/config-agent-hooks'],
+    ['standing instructions', { file_path: '/srv/repo/CLAUDE.md' }, 'dsh-dlp/config-agent-instructions'],
+    ['an always-apply rules file', { file_path: '/srv/repo/.cursor/rules/setup.mdc' }, 'dsh-dlp/config-agent-rules'],
+    ['a folderOpen task', { file_path: '/srv/repo/.vscode/tasks.json' }, 'dsh-dlp/config-editor-tasks'],
+    ['the MCP manifest', { file_path: '/srv/repo/.mcp.json' }, 'dsh-dlp/config-mcp-manifest'],
+    ['a git hook', { file_path: '/srv/repo/.git/hooks/pre-commit' }, 'dsh-dlp/config-git'],
+    ['a managed git hook', { file_path: '/srv/repo/.husky/pre-push' }, 'dsh-dlp/config-git-hooks-managed'],
+    ['a CI workflow', { file_path: '/srv/repo/.github/workflows/ci.yml' }, 'dsh-dlp/config-ci-workflow'],
+    ['a shell startup file', { file_path: '/home/dev/.zshrc' }, 'dsh-dlp/config-shell-rc'],
+    ['a harness bundle manifest', { file_path: '/srv/repo/cordis.yml' }, 'dsh-dlp/config-harness-bundle'],
+    [
+      'a provider base URL that redirects the user\'s key',
+      { file_path: '/srv/repo/docs/setup.md', content: 'ANTHROPIC_BASE_URL=https://collector.invalid/v1\n' },
+      'dsh-dlp/config-api-base-url',
+    ],
+  ])('asks before a write of %s, and records the rule', async (_label, args, ruleId) => {
+    const plugin = mount({}, approval.services)
+
+    const decision = await askListener(plugin)(execution('write', args), async () => ({ kind: 'allow' }))
+
+    expect(decision).toMatchObject({ kind: 'ask' })
+    expect(plugin.records()[0]).toMatchObject({ kind: 'pre-execute-ask', tool: 'write', ruleId })
+  })
+
+  it('asks about a file that does not exist yet, which is the whole technique', async () => {
+    // CVE-2026-25725 worked because the path was absent and therefore writable
+    // with nothing to prompt about.
+    const plugin = mount({}, approval.services)
+    const absent = join(home, 'no-such-repo', '.claude', 'settings.json')
+
+    expect(await askListener(plugin)(execution('write', { file_path: absent }), async () => ({ kind: 'allow' })))
+      .toMatchObject({ kind: 'ask' })
+  })
+
+  it('names the rule and what the file does, never the path', async () => {
+    const plugin = mount({}, approval.services)
+
+    const decision = await askListener(plugin)(
+      execution('write', { file_path: '/srv/tenants/acme-corp-prod/CLAUDE.md' }),
+      async () => ({ kind: 'allow' }),
+    )
+
+    expect(JSON.stringify(decision)).not.toContain('acme-corp-prod')
+    expect(JSON.stringify(decision)).toContain('dsh-dlp/config-agent-instructions')
+  })
+
+  it.each([
+    ['an ordinary source file', 'write', { file_path: '/srv/repo/src/index.ts' }],
+    ['a read of a workflow, which a read-only tool cannot change', 'read', { file_path: '/srv/repo/.github/workflows/ci.yml' }],
+    ['a shell command that only mentions one', 'bash', { command: 'cat /srv/repo/.github/workflows/ci.yml' }],
+  ])('leaves %s alone', async (_label, tool, args) => {
+    const plugin = mount({}, approval.services)
+    const allow: PreToolDecision = { kind: 'allow' }
+
+    expect(await askListener(plugin)(execution(tool, args), async () => allow)).toBe(allow)
+    expect(plugin.records()).toEqual([])
+  })
+
+  it('never widens a decision the waterfall already narrowed', async () => {
+    const plugin = mount({}, approval.services)
+    const deny: PreToolDecision = { kind: 'deny', reason: 'someone else said no' }
+
+    expect(await askListener(plugin)(
+      execution('write', { file_path: '/srv/repo/CLAUDE.md' }),
+      async () => deny,
+    )).toBe(deny)
+  })
+
+  it('leaves a call the floor will deny to the floor', async () => {
+    // Any non-allow decision from this waterfall skips guards entirely, so an
+    // ask over a call the floor denies would turn an unconditional denial into
+    // a prompt the user can grant, and would file it as an ask.
+    const plugin = mount({}, approval.services)
+    const allow: PreToolDecision = { kind: 'allow' }
+    // The home copy of an agent settings file is on the floor; only the
+    // repository-local copy is this tier's business.
+    const exec = execution('write', { file_path: join(homedir(), '.claude', 'settings.json') })
+
+    expect(await askListener(plugin)(exec, async () => allow)).toBe(allow)
+    expect(plugin.guard(exec)).toContain('dsh-dlp/path-agent-home-settings')
+    expect(plugin.records().map(record => record['kind'])).toEqual(['guard-deny'])
+  })
+
+  it('abstains and says so when no approval service is mounted', async () => {
+    // The registry degrades an ask to a denial without an approval service,
+    // and this tier exists precisely because its rules are too
+    // false-positive-prone to deny on.
+    const plugin = mount()
+    const allow: PreToolDecision = { kind: 'allow' }
+
+    expect(await askListener(plugin)(execution('write', { file_path: '/srv/repo/CLAUDE.md' }), async () => allow))
+      .toBe(allow)
+    expect(await askListener(plugin)(execution('write', { file_path: '/srv/repo/AGENTS.md' }), async () => allow))
+      .toBe(allow)
+    expect(plugin.notices.filter(line => line.includes('no approval service'))).toHaveLength(1)
+    expect(plugin.records()).toEqual([])
+  })
+
+  it('is absent when the deployment turns it off', () => {
+    expect(mount({ configWriteAsk: false }).listeners.get('tools/pre-execute')).toHaveLength(2)
   })
 })
 
@@ -635,6 +766,7 @@ describe('this plugin\'s own files', () => {
       telemetryRedaction: false,
       remoteImageNeutralization: false,
       redactTelemetryWorkspacePaths: false,
+      configWriteAsk: false,
     })
 
     expect(guardOf(stub)(execution('read', { file_path: redactionKeyFile }))).toContain('dsh-dlp denied')

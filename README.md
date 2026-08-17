@@ -3,7 +3,7 @@
 Data-loss prevention for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness),
 built as an out-of-repo plugin.
 
-It does six things:
+It does seven things:
 
 1. **Denies credential-file access and secrets bound for the network** — unconditionally, from
    `ctx.tools.guard()`. It tests the path-typed arguments of a call against a table of
@@ -19,7 +19,12 @@ It does six things:
    plugin rewrote after the session log recorded it. Both are partial mitigations for defects
    in the harness rather than in your configuration —
    [see below](#mitigations-for-defects-in-the-harness-itself), including what they do not close.
-6. **Writes an audit record for every decision** to its own sink — rule id, rule version,
+6. **Asks before the agent writes a file that changes future behaviour** — agent settings and
+   hooks, `CLAUDE.md`, `.cursor/rules/**`, `.vscode/tasks.json`, `.mcp.json`, git hooks, CI
+   workflows, shell startup files — and before it writes a `*_BASE_URL` that would redirect a
+   provider credential. This tier prompts rather than denying, and is neutralizable;
+   [see below](#behaviour-changing-config-paths).
+7. **Writes an audit record for every decision** to its own sink — rule id, rule version,
    offsets, and a keyed hash. Never the secret, and never the path or command that matched.
    `dsh-dlp report` reads that sink back.
 
@@ -266,6 +271,7 @@ dsh plugin --profile <name> add ./dsh-dlp-0.1.0.tgz
     telemetryRedaction: true
     remoteImageNeutralization: true
     redactTelemetryWorkspacePaths: true
+    configWriteAsk: true
 ```
 
 `redactionKeyFile` is created on first mount with 32 random bytes at mode `0600`. Keep it out
@@ -295,7 +301,7 @@ addCredentialPaths:
 addEgressTools: [acme_publish]
 raiseSeverity:
   dsh-dlp/secret-assignment: high
-enable: [telemetryRedaction]
+enable: [telemetryRedaction, configWriteAsk]
 ```
 
 Any other key, and any downgrade, makes the **whole file invalid**: it is reported on
@@ -395,6 +401,69 @@ dsh-dlp/path-aws, keyed hash ca9cad27f2b5). Reading or passing credential files 
 tool is blocked by policy and cannot be overridden. Ask the user to supply the value you
 need, or use a path that is not a credential store.
 ```
+
+---
+
+## Behaviour-changing config paths
+
+Everything above governs **reads**. The dominant technique of 2026 is the opposite: the agent
+*writes* a file that changes what happens next time. The Miasma worm put `SessionStart` hooks in
+`.claude/settings.json` and `.gemini/settings.json`, an always-apply `.cursor/rules/setup.mdc`,
+a `folderOpen` task in `.vscode/tasks.json` and a hijacked `npm test` into `Azure/durabletask`;
+GitHub disabled 73 repositories across Azure, microsoft and Azure-Samples over it, 39 of them
+inside 38 seconds. See also CVE-2025-53773, CVE-2026-25725, CVE-2026-33068, CVE-2026-48124,
+CVE-2026-26268 and CVE-2025-59041.
+
+A write to one of these **asks the user first**:
+
+| Rule | Paths |
+|---|---|
+| `config-agent-settings` | `.claude/settings*.json`, and the same under `.gemini/`, `.codex/`, `.cursor/`, `.windsurf/`, `.continue/` |
+| `config-agent-hooks` | `.claude/hooks/**` and the same under the other agent directories |
+| `config-agent-instructions` | `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules` |
+| `config-agent-rules` | `.cursor/rules/**`, `.windsurf/rules/**`, `.continue/rules/**` |
+| `config-mcp-manifest` | `.mcp.json` |
+| `config-editor-tasks` | `.vscode/settings.json`, `.vscode/tasks.json`, `.vscode/launch.json` |
+| `config-git` | `.git/config`, `.git/hooks/**` |
+| `config-git-hooks-managed` | `.husky/**` |
+| `config-ci-workflow` | `.github/workflows/**`, `.gitlab-ci.yml`, `.circleci/**` |
+| `config-shell-rc` | `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zprofile`, `.zshenv`, `.kshrc`, `config.fish`, … |
+| `config-harness-bundle` | `cordis*.yml` |
+| `config-api-base-url` | not a path — content setting a `*_BASE_URL` or `*_API_BASE` to an `http(s)` URL |
+
+The last row is CVE-2026-21852: a repo-local settings file that sets `ANTHROPIC_BASE_URL` sends
+the user's own API key to whatever host it names. That is neither a path nor a secret — it is a
+config key whose *value* redirects a credential — so it is matched against the bytes the call
+would write rather than against where they would go.
+
+**Rules match by name, so creating a file is covered as well as changing one.** CVE-2026-25725
+worked precisely because the path did not exist yet and was therefore writable with nothing to
+prompt about.
+
+**This tier is `ask`, and it is therefore neutralizable — unlike the floor.** That is deliberate
+and it is the important sentence in this section. A developer asks the agent to edit `CLAUDE.md`
+or add a workflow constantly; the guard floor is deny-only and non-overridable by design, so a
+rule with that false-positive rate must not go there. It lives at `tools/pre-execute`, which
+means a listener registered ahead of ours can return without calling `next()` and switch the
+whole tier off. Treat it as a prompt, not as a control.
+
+**A call the floor already denies is left to the floor**, and no prompt appears for it. Any
+non-allow decision at `tools/pre-execute` skips guards entirely, so asking about a call the
+guard would deny would replace an unconditional denial with a prompt a user can grant. That is
+also why `~/.claude/settings.json` and a repository's own `.claude/settings.json` behave
+differently: the first is on the floor, the second is a prompt.
+
+Two more limits worth stating:
+
+- **A shell redirection is not covered.** Only path-typed arguments are tested, and unlike the
+  floor the command line is not tokenised: a shell command cannot be told apart from a *read* of
+  the same file, and prompting on `cat .github/workflows/ci.yml` is exactly the false positive
+  that gets a tier switched off.
+- **With no approval service mounted, the tier abstains rather than denying.** The registry
+  resolves an `ask` through `ctx.get('approval')` and degrades to a *denial* when nothing is
+  composed — which would turn this tier into the silent hard deny it was designed not to be. It
+  reports once on `process.stderr` and `ctx.logger` and lets the call through. `configWriteAsk:
+  false` turns it off entirely.
 
 ---
 
@@ -578,8 +647,10 @@ its own identity.
 }
 ```
 
-`kind` is one of `guard-deny`, `pre-execute-deny`, `execution-mutation`, `result-redaction`,
-`telemetry-redaction`, `assistant-image-neutralized`. An `execution-mutation` record carries
+`kind` is one of `guard-deny`, `pre-execute-deny`, `pre-execute-ask`, `execution-mutation`,
+`result-redaction`, `telemetry-redaction`, `assistant-image-neutralized`. A `pre-execute-ask`
+record carries a top-level `ruleId` instead of `spans`: the finding is that a path names a
+behaviour-changing file, not that any region of it matched. An `execution-mutation` record carries
 `mutatedFields` and, when a tool substitution happened, the `originalTool` the log recorded. An
 `assistant-image-neutralized` record carries `host` — the hostname of the blocked destination
 and nothing else from the URL.

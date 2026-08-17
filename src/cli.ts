@@ -42,16 +42,20 @@ function stringField(record: Record<string, unknown>, key: string): string | und
   return typeof value === 'string' ? value : undefined
 }
 
-/** Rule ids named by a record's spans, in file order and without repeats. */
+/**
+ * Rule ids a record names, in file order and without repeats: one per span,
+ * plus the top-level `ruleId` a decision with no matched region carries.
+ */
 function ruleIdsOf(record: Record<string, unknown>): string[] {
+  const named = stringField(record, 'ruleId')
   const spans = record['spans']
-  if (!Array.isArray(spans)) return []
+  if (!Array.isArray(spans)) return named === undefined ? [] : [named]
   const ids = spans.flatMap((span: unknown) => {
     if (typeof span !== 'object' || span === null) return []
     const ruleId = (span as Record<string, unknown>)['ruleId']
     return typeof ruleId === 'string' ? [ruleId] : []
   })
-  return [...new Set(ids)]
+  return [...new Set(named === undefined ? ids : [named, ...ids])]
 }
 
 /** Invisible-character counts a record carries, keeping only numeric entries. */

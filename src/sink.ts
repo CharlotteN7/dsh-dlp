@@ -40,6 +40,7 @@ export const RECORD_VERSION = 1
 export type AuditKind =
   | 'guard-deny'
   | 'pre-execute-deny'
+  | 'pre-execute-ask'
   | 'execution-mutation'
   | 'result-redaction'
   | 'telemetry-redaction'
@@ -77,6 +78,12 @@ export interface AuditRecord {
    * instruction is exactly the content this file must not repeat.
    */
   readonly unicode?: Readonly<Record<string, number>>
+  /**
+   * The single rule behind a decision that has no matched region to describe,
+   * which is every `pre-execute-ask`: the finding is that a path names a
+   * behaviour-changing file, not that any part of it matched a secret.
+   */
+  readonly ruleId?: string
   /** Telemetry record channel, for `telemetry-redaction`. */
   readonly channel?: string
   /** Fields another plugin rewrote after the call was logged, for `execution-mutation`. */

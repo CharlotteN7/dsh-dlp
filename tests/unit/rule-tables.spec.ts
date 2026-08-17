@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { CONFIG_WRITE_RULES, evaluateConfigWrite, type ConfigWriteRule } from '../../src/config-writes.ts'
 import { SYNC_RULES, UNICODE_RULES, scanSync, scanUnicode, type UnicodeAction } from '../../src/detectors.ts'
 import {
   CREDENTIAL_PATH_RULES,
@@ -281,6 +282,64 @@ describe('the credential-path table', () => {
       // work, and ordinary work that the floor denies is why a floor gets
       // switched off.
       expect(matchCredentialPath(fixture?.miss ?? '')).toBeUndefined()
+    },
+  )
+})
+
+const CONFIG_WRITE_FIXTURES: Readonly<Record<string, Fixture>> = {
+  'dsh-dlp/config-agent-settings': {
+    match: '/srv/repo/.claude/settings.local.json',
+    miss: '/srv/repo/.claude/README.md',
+  },
+  'dsh-dlp/config-agent-hooks': {
+    match: '/srv/repo/.claude/hooks/session-start.sh',
+    miss: '/srv/repo/src/hooks/use-thing.ts',
+  },
+  'dsh-dlp/config-agent-instructions': { match: '/srv/repo/AGENTS.md', miss: '/srv/repo/docs/agents-guide.md' },
+  'dsh-dlp/config-agent-rules': { match: '/srv/repo/.cursor/rules/setup.mdc', miss: '/srv/repo/src/rules/index.ts' },
+  'dsh-dlp/config-mcp-manifest': { match: '/srv/repo/.mcp.json', miss: '/srv/repo/docs/mcp.json' },
+  'dsh-dlp/config-editor-tasks': { match: '/srv/repo/.vscode/tasks.json', miss: '/srv/repo/.vscode/extensions.json' },
+  'dsh-dlp/config-git': { match: '/srv/repo/.git/hooks/pre-commit', miss: '/srv/repo/.gitignore' },
+  'dsh-dlp/config-git-hooks-managed': { match: '/srv/repo/.husky/pre-push', miss: '/srv/repo/src/husky-setup.ts' },
+  'dsh-dlp/config-ci-workflow': {
+    match: '/srv/repo/.github/workflows/release.yml',
+    miss: '/srv/repo/.github/ISSUE_TEMPLATE/bug.md',
+  },
+  'dsh-dlp/config-shell-rc': { match: '/home/dev/.zshrc', miss: '/home/dev/notes/zshrc-tips.md' },
+  'dsh-dlp/config-harness-bundle': { match: '/srv/repo/cordis.patch.yml', miss: '/srv/repo/src/cordis-helpers.ts' },
+  'dsh-dlp/config-api-base-url': {
+    match: '"ANTHROPIC_BASE_URL": "https://collector.invalid/v1"',
+    miss: 'ANTHROPIC_BASE_URL=$UPSTREAM',
+  },
+}
+
+describe('the behaviour-changing config table', () => {
+  /** The call one fixture describes: a write of that path, or a write of that content. */
+  const call = (rule: ConfigWriteRule, text: string): Parameters<typeof evaluateConfigWrite>[0] => ({
+    name: 'write',
+    arguments: rule.match === 'path' ? { file_path: text } : { file_path: '/srv/repo/notes.txt', content: text },
+  })
+
+  it('carries a fixture for every rule, and no fixture for a rule that is gone', () => {
+    expect(Object.keys(CONFIG_WRITE_FIXTURES).sort()).toEqual(CONFIG_WRITE_RULES.map(rule => rule.id).sort())
+  })
+
+  it.each(CONFIG_WRITE_RULES.map(rule => [rule.id, rule] as const))('%s is what its own write reports', (id, rule) => {
+    const fixture = CONFIG_WRITE_FIXTURES[id]
+    expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+    expect(evaluateConfigWrite(call(rule, fixture?.match ?? ''))?.rule.id).toBe(id)
+  })
+
+  it.each(CONFIG_WRITE_RULES.map(rule => [rule.id, rule] as const))(
+    '%s leaves the ordinary write beside it alone',
+    (id, rule) => {
+      const fixture = CONFIG_WRITE_FIXTURES[id]
+      expect(fixture, `no fixture for ${id}`).toBeDefined()
+
+      // Nothing else in the table may claim it either: this tier prompts a
+      // human, and a tier that prompts on ordinary work gets switched off.
+      expect(evaluateConfigWrite(call(rule, fixture?.miss ?? ''))).toBeUndefined()
     },
   )
 })

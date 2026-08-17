@@ -67,6 +67,7 @@ async function registry(): Promise<{ ctx: Context; records: () => Record<string,
     telemetryRedaction: false,
     remoteImageNeutralization: false,
     redactTelemetryWorkspacePaths: false,
+    configWriteAsk: false,
   })
   const records = (): Record<string, unknown>[] => {
     let text: string

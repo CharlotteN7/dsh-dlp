@@ -1,7 +1,7 @@
 /**
  * `dsh-dlp` — data-loss prevention for DeepSeek Harness.
  *
- * Four registrations, in descending order of how much they can be trusted:
+ * Six registrations, in descending order of how much they can be trusted:
  *
  * 1. `ctx.tools.guard()` — an unconditional, non-configurable deny floor for
  *    credential paths named in a path-typed argument and for secrets heading
@@ -9,6 +9,10 @@
  *    has no allow arm.
  * 2. `tools/pre-execute` — the async breadth tier, which can await
  *    `@secretlint/core`. Neutralizable by any listener registered ahead of it.
+ * 2b. `tools/pre-execute` — the `ask` tier for writes to behaviour-changing
+ *    config paths. Deliberately here rather than on the floor: its rules have a
+ *    real false-positive rate and the floor cannot ask. Neutralizable, and it
+ *    abstains entirely when no approval service is mounted.
  * 3. `tools/post-execute` — result redaction, applied before the `tool/result`
  *    session event is appended, so the durable log records the redacted copy;
  *    a result that cannot be cleaned is withheld rather than accepted.
@@ -42,6 +46,7 @@ import { SpanHasher } from './redaction.ts'
 import { safeEvaluateGuard } from './guard.ts'
 import { neutralizeImageStream } from './images.ts'
 import { ExecutionSnapshots, mutationReason } from './mutation.ts'
+import { evaluateConfigWrite } from './config-writes.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
 import { redactRecord, telemetrySeamNotice } from './telemetry.ts'
 import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from './sink.ts'
@@ -244,6 +249,57 @@ export function apply(ctx: Context, config: Config): void {
     })
     return verdict.reason
   }), 'dsh-dlp guard floor')
+
+  /**
+   * Report once that the `ask` tier has nowhere to ask.
+   *
+   * The registry resolves an `ask` through `ctx.get('approval')` and keeps the
+   * historical degrade to *deny* when no service is composed. This tier exists
+   * because its rules are too false-positive-prone for a deny, so under a
+   * deployment with no approval channel it abstains instead of becoming the
+   * silent hard deny it was designed not to be. Evaluated at decision time
+   * rather than at mount, because by then the harness is running and an absent
+   * service is conclusive rather than a load order.
+   */
+  let approvalSeamReported = false
+  const discloseApprovalSeam = (): void => {
+    if (approvalSeamReported) return
+    approvalSeamReported = true
+    notice(ctx, 'dsh-dlp: configWriteAsk is enabled, but no approval service is mounted, so an ask would degrade'
+      + ' to a denial. This tier abstains instead: a write to a behaviour-changing config path is allowed through'
+      + ' with no prompt. The guard floor is unaffected.')
+  }
+
+  if (policy.configWriteAsk) {
+    // Registered ahead of the breadth tier, so a call that is both a config
+    // write and carries a secret is denied rather than merely asked about:
+    // this listener sees whatever the rest of the waterfall settled on and
+    // only ever narrows `allow` into `ask`.
+    ctx.on('tools/pre-execute', async (exec: ToolExecution, next: () => Promise<PreToolDecision>) => {
+      const decision = await next()
+      if (decision.kind !== 'allow') return decision
+      const finding = evaluateConfigWrite(exec)
+      if (finding === undefined) return decision
+      // A call the floor will deny anyway is left to the floor. Any non-allow
+      // decision from this waterfall skips guards entirely, so asking here
+      // would replace an unconditional denial with a prompt a user can grant,
+      // and would file the decision as an ask rather than as a guard denial.
+      if (safeEvaluateGuard(exec, policy, hasher) !== undefined) return decision
+      if (ctx.get('approval') === undefined) {
+        discloseApprovalSeam()
+        return decision
+      }
+      sink.write({
+        v: RECORD_VERSION,
+        time: new Date().toISOString(),
+        kind: 'pre-execute-ask',
+        decisionId: newDecisionId(),
+        ...identity(exec),
+        ruleId: finding.rule.id,
+      })
+      return { kind: 'ask', reason: finding.reason }
+    })
+  }
 
   if (policy.breadthTier) {
     ctx.on('tools/pre-execute', async (exec: ToolExecution, next: () => Promise<PreToolDecision>) => {

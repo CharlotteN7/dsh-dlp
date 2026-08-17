@@ -334,8 +334,10 @@ rather than a copy.
 ## 12. Coverage: 100% of `src/`, with explicit exemptions
 
 CONVENTIONS §4 adopts upstream's per-file 100% bar for security code, and `vitest.config.ts`
-enforces it. These arms use `/* v8 ignore */` with a stated reason, matching upstream's own
-convention:
+enforces it with `thresholds.perFile`. The aggregate form it used before did not: a project-wide
+total lets one uncovered module hide behind every covered one, which is exactly the failure the
+per-file bar exists to prevent. These arms use `/* v8 ignore */` with a stated reason, matching
+upstream's own convention:
 
 - `mapSecretlintSeverity`'s non-`error` arms — the recommended preset reports only `error`;
   the other arms exist for rules a deployment adds.
@@ -348,6 +350,19 @@ convention:
 - the process entry at the bottom of `cli.ts` — instrumenting it would mean importing the
   module as a program. `tests/e2e/report.e2e.ts` runs the built `lib/cli.js` as a subprocess
   instead, which is the only form that proves the `bin` entry and its shebang work.
+
+**Coverage is not evidence that a rule table is right.** A single `it.each` over a table reaches
+100% of it while proving only that it was iterated, and the entries are most of what this
+package is. `tests/unit/rule-tables.spec.ts` therefore drives every exported table — the tier-1
+detectors, the invisible-character classes, the credential paths, the home-anchored rules and
+the behaviour-changing config paths — from its own export, with one positive and one near miss
+per rule id and a key-set assertion in both directions. A rule added without a fixture fails
+three tests rather than shipping untested.
+
+The guard floor's own tests had the opposite defect: `plugin.guards[0]?.(…)` yields `undefined`
+when nothing registered a guard, which is also what an abstaining floor returns, so every
+"the floor abstains" test passed against no floor at all. The mount helper binds the single
+registered guard and throws when it is missing.
 
 ## 13. Invisible characters are split into a strip half and a report half
 
@@ -570,3 +585,63 @@ leak" first, because the failure mode of a scary message here is an operator tur
 **The upstream fix is better**: one warning from the disabled branch when a hook exists on that
 waterfall — the same shape as the `feedback/record` warning already there — helps every
 listener, not only this one.
+
+## 18. Behaviour-changing config writes ask, and are deliberately not on the floor
+
+Everything in §8 governs reads. The dominant technique of 2026 is the agent *writing* a file
+that changes what happens next time: the Miasma worm's `SessionStart` hooks in
+`.claude/settings.json` and `.gemini/settings.json`, an always-apply `.cursor/rules/setup.mdc`,
+a `folderOpen` task in `.vscode/tasks.json`, a hijacked `npm test` in `Azure/durabletask` —
+GitHub disabled 73 repositories across Azure, microsoft and Azure-Samples over it, 39 of them
+inside 38 seconds. CVE-2025-53773, CVE-2026-25725, CVE-2026-33068, CVE-2026-48124,
+CVE-2026-26268 and CVE-2025-59041 are the same shape.
+
+**This tier is `ask`, at `tools/pre-execute`, and that is the decision.** The floor is deny-only
+and non-negotiable by construction: `ToolGuard` returns `string | undefined` and has no ask arm.
+A rule belongs there only if a developer never legitimately trips it. Editing `CLAUDE.md`,
+adding a `.github/workflows` job and extending `.vscode/settings.json` are things a developer
+asks for constantly, so an unoverridable denial on them produces one outcome — the plugin gets
+uninstalled, taking the floor with it. **The cost is that this tier is neutralizable**, exactly
+like the breadth tier: a `tools/pre-execute` listener registered ahead of ours can return
+without calling `next()` and it never runs. README says so beside the feature rather than
+implying a floor.
+
+**Registered ahead of the breadth tier.** Registration order is execution order and each
+listener sees what the rest of the chain settled on, so the tier that can only ask has to be
+outermost; the other way round, a call that both writes a hook and carries a token would be
+asked about instead of denied.
+
+**With no approval service, it abstains.** The registry resolves an `ask` through
+`ctx.get('approval')` and keeps the historical degrade to *deny* when nothing is composed. A tier
+whose whole justification is "these rules are too false-positive-prone to deny on" must not
+become a denial because a deployment has no UI, so it reports once and lets the call through.
+The check is at decision time rather than at mount, because by then the harness is running and
+an absent service is conclusive rather than a load order — the opposite of §17's problem, and
+the reason it needs no deferred evaluation.
+
+**A call the floor will deny is left to the floor.** Any non-allow decision from this waterfall
+skips guards entirely (§1), so asking about a call the guard would deny replaces an
+unconditional denial with a prompt the user can grant, and files the decision as an ask rather
+than as a `guard-deny`. The E2E run found this: a write to `$DSH_HOME/profiles/e2e/cordis.yml`
+matches `config-harness-bundle` *and* the floor's `path-dsh-home`, and the transcript came back
+saying the user rejected the tool instead of naming the rule. The listener therefore evaluates
+the floor first and abstains when it would deny. It is also why the home copy of an agent
+settings file (§8) and the repository-local copy behave differently in the same run.
+
+**Matched by name, never against the filesystem.** CVE-2026-25725 worked precisely because the
+path did not exist yet, so a rule that only fires on files that are already there misses the
+technique entirely.
+
+**Shell command lines are not tokenised here**, unlike in the floor. The floor can afford it
+because a credential path in a command line is worth a denial either way; this tier cannot,
+because a command line cannot be told apart from a *read* of the same file, and prompting on
+`cat .github/workflows/ci.yml` is the false positive that gets the tier switched off. A shell
+redirection into one of these files is therefore not covered.
+
+**CVE-2026-21852 is in this table rather than in the detector tiers.** A repo-local settings file
+that sets `ANTHROPIC_BASE_URL` — or any `*_BASE_URL` / `*_API_BASE` — sends the user's own key to
+whatever host it names. It is neither a path nor a secret: it is a config key whose *value*
+redirects a credential. So it is the one rule matched against content-typed arguments, and
+content-typed keys are a set of their own, kept away from the floor's path keys in both
+directions: the floor must never run its path table over file content (§8), and this rule must
+run over nothing else.

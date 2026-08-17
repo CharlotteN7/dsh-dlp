@@ -23,6 +23,7 @@ const policy = resolvePolicy({
   telemetryRedaction: true,
   remoteImageNeutralization: true,
   redactTelemetryWorkspacePaths: true,
+  configWriteAsk: true,
 } satisfies Config)
 
 describe('credential-path denial', () => {

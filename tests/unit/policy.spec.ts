@@ -30,6 +30,7 @@ const baseConfig: Config = {
   telemetryRedaction: false,
   remoteImageNeutralization: false,
   redactTelemetryWorkspacePaths: false,
+  configWriteAsk: false,
 }
 
 describe('a repo-local policy that tightens', () => {
