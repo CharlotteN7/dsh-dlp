@@ -43,6 +43,21 @@ describe('a ledger record', () => {
     expect(spans[0]?.path).toBe('/message/content/0/text')
   })
 
+  it.each([
+    ['a GitLab personal access token', 'glpat-ABCdefGHIjklMNOpqrST', 'dsh-dlp/gitlab-token'],
+    ['a HuggingFace token', `hf_${'d'.repeat(34)}`, 'dsh-dlp/huggingface-token'],
+    ['an OpenRouter key', `sk-or-v1-${'0123456789abcdef'.repeat(4)}`, 'dsh-dlp/openrouter-api-key'],
+    ['a SendGrid key', `SG.${'h'.repeat(22)}.${'i'.repeat(43)}`, 'dsh-dlp/sendgrid-api-key'],
+  ])('has %s replaced, which only tier 1 can do on this seam', (_label, secret, ruleId) => {
+    // This waterfall returns a record rather than a promise, so tier 2 is
+    // unreachable here and a format missing from tier 1 is exported in the
+    // clear.
+    const { record, spans } = redactRecord(ledger({ text: `export TOKEN=${secret}` }), policy, hasher)
+
+    expect(JSON.stringify(record.body)).not.toContain(secret)
+    expect(spans.map(span => span.ruleId)).toContain(ruleId)
+  })
+
   it('has a secret in an attribute value replaced', () => {
     const { record } = redactRecord(ledger({}, { 'agent.note': `key ${SLACK}` }), policy, hasher)
 

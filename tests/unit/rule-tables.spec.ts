@@ -58,6 +58,46 @@ const SYNC_FIXTURES: Readonly<Record<string, Fixture>> = {
     match: `npm_${'c'.repeat(36)}`,
     miss: `npm_${'c'.repeat(20)}`,
   },
+  'dsh-dlp/gitlab-token': {
+    match: 'glpat-ABCdefGHIjklMNOpqrST',
+    miss: 'glpat-ABCdefGHIj',
+  },
+  'dsh-dlp/huggingface-token': {
+    match: `hf_${'d'.repeat(34)}`,
+    miss: `hf_${'d'.repeat(20)}`,
+  },
+  'dsh-dlp/groq-api-key': {
+    match: `gsk_${'e'.repeat(52)}`,
+    miss: `gsk_${'e'.repeat(20)}`,
+  },
+  'dsh-dlp/xai-api-key': {
+    match: `xai-${'f'.repeat(80)}`,
+    miss: `xai-${'f'.repeat(20)}`,
+  },
+  'dsh-dlp/google-oauth-client-secret': {
+    match: `GOCSPX-${'g'.repeat(28)}`,
+    miss: 'GOCSPX-short',
+  },
+  'dsh-dlp/databricks-token': {
+    match: `dapi${'0123456789abcdef'.repeat(2)}`,
+    miss: 'dapi0123456789abcdef',
+  },
+  'dsh-dlp/sendgrid-api-key': {
+    match: `SG.${'h'.repeat(22)}.${'i'.repeat(43)}`,
+    miss: `SG.${'h'.repeat(22)}`,
+  },
+  'dsh-dlp/supabase-service-key': {
+    match: `sbp_${'0123456789'.repeat(4)}`,
+    miss: 'sbp_0123456789',
+  },
+  'dsh-dlp/openrouter-api-key': {
+    match: `sk-or-v1-${'0123456789abcdef'.repeat(4)}`,
+    miss: 'sk-or-v1-0123456789abcdef',
+  },
+  'dsh-dlp/notion-token': {
+    match: `ntn_${'j'.repeat(46)}`,
+    miss: `ntn_${'j'.repeat(20)}`,
+  },
   'dsh-dlp/private-key-block': {
     match: '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----',
     miss: '-----BEGIN CERTIFICATE-----\nMIIEowIBAAKCAQEA\n-----END CERTIFICATE-----',

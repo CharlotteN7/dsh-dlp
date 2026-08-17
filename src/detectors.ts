@@ -84,6 +84,11 @@ export interface SyncRule {
  * delimiters make a match structurally unambiguous, plus PEM blocks and
  * credential-bearing URLs. Anything requiring entropy heuristics is left to
  * tier 2, where a false positive costs a redaction rather than a denial.
+ *
+ * Prefix-anchored is the whole membership criterion, and the reason this table
+ * keeps growing rather than deferring to tier 2: the `session-telemetry/record`
+ * waterfall is synchronous and cannot reach tier 2 at all, so a format missing
+ * here is exported in the clear when telemetry is on.
  */
 export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/aws-access-key-id', version: 1, severity: 'critical', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/g },
@@ -92,9 +97,23 @@ export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/slack-token', version: 1, severity: 'critical', pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g },
   { id: 'dsh-dlp/stripe-secret-key', version: 1, severity: 'critical', pattern: /\b[sr]k_live_[A-Za-z0-9]{16,}\b/g },
   { id: 'dsh-dlp/anthropic-api-key', version: 1, severity: 'critical', pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
+  // Ahead of the OpenAI rule, whose `sk-` prefix also covers this shape: two
+  // detections over the same span merge into one placeholder attributed to
+  // whichever rule the table reached first, and the specific rule is the
+  // useful attribution.
+  { id: 'dsh-dlp/openrouter-api-key', version: 1, severity: 'critical', pattern: /\bsk-or-v1-[0-9a-f]{64}\b/g },
   { id: 'dsh-dlp/openai-api-key', version: 1, severity: 'critical', pattern: /\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}/g },
   { id: 'dsh-dlp/google-api-key', version: 1, severity: 'critical', pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g },
   { id: 'dsh-dlp/npm-token', version: 1, severity: 'critical', pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  { id: 'dsh-dlp/gitlab-token', version: 1, severity: 'critical', pattern: /\bglpat-[A-Za-z0-9_-]{20,}/g },
+  { id: 'dsh-dlp/huggingface-token', version: 1, severity: 'critical', pattern: /\bhf_[A-Za-z0-9]{34,}/g },
+  { id: 'dsh-dlp/groq-api-key', version: 1, severity: 'critical', pattern: /\bgsk_[A-Za-z0-9]{40,}/g },
+  { id: 'dsh-dlp/xai-api-key', version: 1, severity: 'critical', pattern: /\bxai-[A-Za-z0-9]{32,}/g },
+  { id: 'dsh-dlp/google-oauth-client-secret', version: 1, severity: 'critical', pattern: /\bGOCSPX-[A-Za-z0-9_-]{24,}/g },
+  { id: 'dsh-dlp/databricks-token', version: 1, severity: 'critical', pattern: /\bdapi[0-9a-f]{32}(?:-\d+)?\b/g },
+  { id: 'dsh-dlp/sendgrid-api-key', version: 1, severity: 'critical', pattern: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g },
+  { id: 'dsh-dlp/supabase-service-key', version: 1, severity: 'critical', pattern: /\bsbp_[0-9a-f]{40}\b/g },
+  { id: 'dsh-dlp/notion-token', version: 1, severity: 'critical', pattern: /\bntn_[A-Za-z0-9]{40,}/g },
   { id: 'dsh-dlp/private-key-block', version: 1, severity: 'critical', pattern: /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )*PRIVATE KEY-----/g },
   { id: 'dsh-dlp/json-web-token', version: 1, severity: 'high', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
   { id: 'dsh-dlp/credential-url', version: 1, severity: 'high', pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@[^\s/]+/gi },

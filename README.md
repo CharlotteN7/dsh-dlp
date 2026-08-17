@@ -430,10 +430,16 @@ the redacted copy.
 Two tiers:
 
 - **Tier 1**, synchronous and owned by this package: prefix-anchored token formats (AWS,
-  GitHub, Slack, Stripe, OpenAI, Anthropic, Google, npm), PEM private-key blocks, JWTs,
-  credential-bearing URLs, Slack/Discord/Teams webhook URLs, and high-signal secret
-  assignments. This is the tier the guard and the telemetry listener use, because both of
-  those seams are synchronous, and it is never capped.
+  GitHub, GitLab, Slack, Stripe, OpenAI, OpenRouter, Anthropic, Google API keys and
+  `GOCSPX-` OAuth client secrets, npm, HuggingFace, Groq, xAI, Databricks, SendGrid,
+  Supabase, Notion), PEM private-key blocks, JWTs, credential-bearing URLs,
+  Slack/Discord/Teams webhook URLs, and high-signal secret assignments. This is the tier the
+  guard and the telemetry listener use, because both of those seams are synchronous, and it is
+  never capped.
+
+  Prefix-anchored is the whole criterion for being in this tier, and the reason the table keeps
+  growing rather than deferring to tier 2 is the line below: **the telemetry seam cannot reach
+  tier 2**, so a format missing from tier 1 is exported in the clear when telemetry is on.
 - **Tier 2**, [`@secretlint/core`](https://github.com/secretlint/secretlint) with the
   recommended preset — 28 maintained rules, in-process, no subprocess. Used at
   `tools/pre-execute` and `tools/post-execute`, the two seams that can await. **The telemetry
