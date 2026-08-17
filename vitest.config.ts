@@ -6,7 +6,9 @@ export default defineConfig({
     include: ['tests/unit/**/*.spec.ts'],
     coverage: {
       include: ['src/**/*.ts'],
-      thresholds: { lines: 100, functions: 100, branches: 100, statements: 100 },
+      // Per file, not in aggregate: ADR §12 describes the bar as per-file, and
+      // a project-wide total lets one uncovered module hide behind the rest.
+      thresholds: { perFile: true, lines: 100, functions: 100, branches: 100, statements: 100 },
     },
   },
 })
