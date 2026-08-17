@@ -1,0 +1,10 @@
+title: dsh-dlp
+description: Data-loss prevention for DeepSeek Harness — credential-path denial, result and telemetry redaction, and a write-side config guard.
+theme: jekyll-theme-primer
+show_downloads: false
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
