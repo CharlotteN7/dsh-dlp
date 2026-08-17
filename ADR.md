@@ -753,3 +753,43 @@ registration between the mutation snapshot and the breadth tier.
 
 It inherits every cost §18 records: neutralizable at `tools/pre-execute`, abstaining when no
 approval service is mounted, and silent on a call the floor already denies.
+
+## 22. A superseded token format is kept beside the current one, not replaced by it
+
+Two tier-1 entries were stale in different ways, and stale is worse than missing: a rule that
+matches only a retired format reads as coverage in the table and fires on nothing issued today.
+
+**Supabase.** The table matched `sbp_` only. The current formats are `sb_secret_…` and
+`sb_publishable_…`, from the provider's own API-keys page. `sb_secret_` is now in the table;
+`sbp_` stays, for two reasons. Supabase's deprecation notice says the keys these replace "will
+be deprecated by the end of 2026", so a credential in the old format is still live and still
+worth a denial — and a rule id is quoted in every audit record it produced, so deleting the rule
+would leave records naming a rule that no longer exists. The cost of keeping it is one anchored
+regular expression in a linear pass.
+
+**`sb_publishable_` is deliberately not added.** It is the browser-facing replacement for
+`anon`, meant to ship in every frontend bundle. A `critical` match on it would deny an
+egress-capable call for carrying a value the provider publishes on purpose, which is a false
+denial with no leak behind it. The precedent is already in the table: it has always matched
+Stripe's `sk_live_`/`rk_live_` and never `pk_live_`, for the same reason.
+
+**Cloudflare had no rule at all.** The provider's token-formats page gives the whole family:
+"Each credential type has a distinct prefix followed by 40 characters and a checksum" —
+`cfk_` (Global API Key), `cfut_` (User API Token), `cfat_` (Account API Token). One rule covers
+all three, because they differ only in the prefix. The checksum's length and character set are
+not published, so the pattern requires the documented 40 characters and then runs to the end of
+the token rather than pinning a total length that would break on the first token that is one
+character longer than assumed.
+
+The legacy Cloudflare formats — a 40-character alphanumeric string, or a 37–45 character hex
+string — are deliberately *not* added, and this is the opposite decision to the Supabase one for
+a stated reason: they carry no prefix, so matching them would need the surrounding context
+gitleaks uses for them. Context is exactly what §3 keeps out of tier 1, where a false positive
+costs a denial. They stay tier 2's problem.
+
+**Every new pattern was checked against a sample of the length the provider describes, and
+against one character less.** The fixture for Cloudflare is the prefix, 40 characters and a
+six-character checksum; its near miss is the same token at 39. The fixture for Supabase is the
+shape the announcement discussion shows — a 22-character base64url body, a separator and a
+checksum. A rule tested against a fixture shorter than the real credential reports a broken rule
+that is fine, which has cost this package a day before.

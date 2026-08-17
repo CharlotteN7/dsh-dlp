@@ -112,7 +112,29 @@ export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/google-oauth-client-secret', version: 1, severity: 'critical', pattern: /\bGOCSPX-[A-Za-z0-9_-]{24,}/g },
   { id: 'dsh-dlp/databricks-token', version: 1, severity: 'critical', pattern: /\bdapi[0-9a-f]{32}(?:-\d+)?\b/g },
   { id: 'dsh-dlp/sendgrid-api-key', version: 1, severity: 'critical', pattern: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g },
+  // Supabase's `sbp_` format is superseded but not retired: the platform's own
+  // deprecation notice for the keys it replaces says they "will be deprecated
+  // by the end of 2026", so a credential in this format is still live and a
+  // rule matching it still fires on something. Removing it would also make
+  // every audit record already carrying this rule id uninterpretable.
   { id: 'dsh-dlp/supabase-service-key', version: 1, severity: 'critical', pattern: /\bsbp_[0-9a-f]{40}\b/g },
+  // The current format. Supabase documents the prefixes (`sb_publishable_...`,
+  // `sb_secret_...`) but not the suffix, so the rule anchors on the documented
+  // prefix and requires enough base64url characters to exclude prose: the keys
+  // shown in the announcement discussion carry a 22-character body, a `_`, and
+  // a checksum. `sb_publishable_` is deliberately absent — it is the
+  // browser-facing replacement for `anon` and is meant to be published, the
+  // same reason this table matches Stripe's `sk_live_` and not `pk_live_`.
+  { id: 'dsh-dlp/supabase-secret-key', version: 1, severity: 'critical', pattern: /\bsb_secret_[A-Za-z0-9_-]{16,}/g },
+  // Cloudflare's scannable format, from the provider's own table: "Each
+  // credential type has a distinct prefix followed by 40 characters and a
+  // checksum" — `cfk_` for a Global API Key, `cfut_` for a User API Token,
+  // `cfat_` for an Account API Token. The checksum's length and character set
+  // are not published, so the rule requires the documented 40 and lets the
+  // match run to the end of the token. The legacy formats are a bare
+  // 40-character alphanumeric string and a 37-45 character hex string, neither
+  // of which is prefix-anchored and both of which are therefore tier 2's.
+  { id: 'dsh-dlp/cloudflare-api-token', version: 1, severity: 'critical', pattern: /\bcf(?:ut|at|k)_[A-Za-z0-9_-]{40,}/g },
   { id: 'dsh-dlp/notion-token', version: 1, severity: 'critical', pattern: /\bntn_[A-Za-z0-9]{40,}/g },
   { id: 'dsh-dlp/private-key-block', version: 1, severity: 'critical', pattern: /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )*PRIVATE KEY-----/g },
   { id: 'dsh-dlp/json-web-token', version: 1, severity: 'high', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },

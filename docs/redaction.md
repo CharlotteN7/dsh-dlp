@@ -57,7 +57,7 @@ Two tiers:
 - **Tier 1**, synchronous and owned by this package: prefix-anchored token formats (AWS,
   GitHub, GitLab, Slack, Stripe, OpenAI, OpenRouter, Anthropic, Google API keys and
   `GOCSPX-` OAuth client secrets, npm, HuggingFace, Groq, xAI, Databricks, SendGrid,
-  Supabase, Notion), PEM private-key blocks, JWTs, credential-bearing URLs,
+  Supabase, Cloudflare, Notion), PEM private-key blocks, JWTs, credential-bearing URLs,
   Slack/Discord/Teams webhook URLs, and high-signal secret assignments. This is the tier the
   guard and the telemetry listener use, because both of those seams are synchronous, and it is
   never capped.
@@ -65,6 +65,18 @@ Two tiers:
   Prefix-anchored is the whole criterion for being in this tier, and the reason the table keeps
   growing rather than deferring to tier 2 is the line below: **the telemetry seam cannot reach
   tier 2**, so a format missing from tier 1 is exported in the clear when telemetry is on.
+
+  A superseded format stays in the table beside the one that replaced it. Supabase's `sbp_`
+  keys are deprecated rather than switched off, so a credential in that format is still live;
+  removing the rule would also make every audit record already carrying its id
+  uninterpretable. Cloudflare's pre-2026 tokens go the other way: a bare 40-character
+  alphanumeric string has no prefix to anchor on, so the legacy format is tier 2's and only the
+  `cfut_`/`cfat_`/`cfk_` scannable format is here.
+
+  A key a provider means to publish is deliberately absent. Supabase's `sb_publishable_` is the
+  browser-facing replacement for `anon` and ships in every frontend bundle, so matching it would
+  cost a denial for something that is not a secret — the same reason this table has always
+  matched Stripe's `sk_live_` and not `pk_live_`.
 - **Tier 2**, [`@secretlint/core`](https://github.com/secretlint/secretlint) with the
   recommended preset — 28 maintained rules, in-process, no subprocess. Used at
   `tools/pre-execute` and `tools/post-execute`, the two seams that can await. **The telemetry

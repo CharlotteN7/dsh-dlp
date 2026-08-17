@@ -97,6 +97,19 @@ const SYNC_FIXTURES: Readonly<Record<string, Fixture>> = {
     match: `sbp_${'0123456789'.repeat(4)}`,
     miss: 'sbp_0123456789',
   },
+  // The shape Supabase's announcement discussion shows: a 22-character
+  // base64url body, a separator, and a checksum.
+  'dsh-dlp/supabase-secret-key': {
+    match: `sb_secret_${'N'.repeat(30)}`,
+    miss: `sb_secret_${'N'.repeat(6)}`,
+  },
+  // The documented scannable format: the prefix, 40 characters, and a checksum
+  // whose length the provider does not publish. The near miss is the same
+  // token one character short of the documented 40.
+  'dsh-dlp/cloudflare-api-token': {
+    match: `cfut_${'0123456789abcdefghij'.repeat(2)}Ab12Cd`,
+    miss: `cfut_${'0123456789abcdefghij'.repeat(2).slice(0, 39)}`,
+  },
   'dsh-dlp/openrouter-api-key': {
     match: `sk-or-v1-${'0123456789abcdef'.repeat(4)}`,
     miss: 'sk-or-v1-0123456789abcdef',

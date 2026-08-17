@@ -64,6 +64,41 @@ describe('the synchronous rule table', () => {
     expect(scanSync(`SLACK_WEBHOOK=${webhook}`).detections[0]?.ruleId).toBe('dsh-dlp/slack-webhook-url')
   })
 
+  // Cloudflare's scannable format gives every credential type the same body
+  // and a different prefix, so one rule covers all three.
+  it.each([
+    ['a user API token', 'cfut_'],
+    ['an account API token', 'cfat_'],
+    ['a global API key', 'cfk_'],
+  ])('finds %s in the current prefixed format', (_label, prefix) => {
+    const token = `${prefix}${'0123456789abcdefghij'.repeat(2)}Ab12Cd`
+
+    expect(scanSync(`CLOUDFLARE_API_TOKEN=${token}`).detections[0]?.ruleId).toBe('dsh-dlp/cloudflare-api-token')
+  })
+
+  it('leaves the legacy Cloudflare token to tier 2, having no prefix to anchor on', () => {
+    // 40 alphanumeric characters with no prefix is a word, and tier 1 denies.
+    expect(scanSync(`CLOUDFLARE_API_TOKEN ${'0123456789abcdefghij'.repeat(2)}`).detections
+      .map(detection => detection.ruleId)).toEqual([])
+  })
+
+  it('finds a Supabase secret key in the format issued today', () => {
+    expect(scanSync(`SUPABASE_SECRET_KEY=sb_secret_${'N'.repeat(30)}`).detections[0]?.ruleId)
+      .toBe('dsh-dlp/supabase-secret-key')
+  })
+
+  it('still finds the superseded Supabase format, which is deprecated rather than retired', () => {
+    expect(scanSync(`sbp_${'0123456789'.repeat(4)}`).detections[0]?.ruleId).toBe('dsh-dlp/supabase-service-key')
+  })
+
+  it('leaves a Supabase publishable key alone, which is meant to reach a browser', () => {
+    // Same reasoning as Stripe's `pk_live_`, which this table also skips: a key
+    // published in every frontend bundle is not a finding, and denying a call
+    // for carrying one would stop ordinary work.
+    expect(scanSync('sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgx7Qb').detections).toEqual([])
+    expect(scanSync(`pk_live_${'5'.repeat(24)}`).detections).toEqual([])
+  })
+
   it('orders two matches that start together by where they end', () => {
     const rules = [
       { id: 'test/long', version: 1, severity: 'high' as const, pattern: /ABC/g },
