@@ -56,6 +56,31 @@ describe('which calls the ask tier examines', () => {
     expect(finding?.rule.id).toBe('dsh-dlp/config-agent-settings')
   })
 
+  // Three of the four were covered and `.claude/rules` was not, which VS Code
+  // lists as a workspace instruction location it detects and applies on its own.
+  it.each([
+    '/srv/repo/.claude/rules/a.md',
+    '/srv/repo/.cursor/rules/a.mdc',
+    '/srv/repo/.windsurf/rules/a.md',
+    '/srv/repo/.continue/rules/a.md',
+  ])('asks before a write to %s', (file_path) => {
+    expect(evaluateConfigWrite({ name: 'write', arguments: { file_path } })?.rule.id)
+      .toBe('dsh-dlp/config-agent-rules')
+  })
+
+  it('asks before a prompt template nested under the prompts directory', () => {
+    expect(evaluateConfigWrite({ name: 'write', arguments: { file_path: '/srv/repo/.prompts/team/review.prompttemplate' } })
+      ?.rule.id).toBe('dsh-dlp/config-prompt-template')
+  })
+
+  it.each(['/srv/repo/pnpm-workspace.yaml', '/srv/repo/pnpm-workspace.yml'])(
+    'asks before %s, which decides the registry the next install downloads from',
+    (file_path) => {
+      expect(evaluateConfigWrite({ name: 'write', arguments: { file_path } })?.rule.id)
+        .toBe('dsh-dlp/config-pnpm-workspace')
+    },
+  )
+
   it('accepts a rule table of its own', () => {
     const only = [{
       id: 'acme/deploy-script',

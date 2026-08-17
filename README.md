@@ -20,9 +20,10 @@ built as an out-of-repo plugin.
 5. **Neutralises remote markdown images in assistant output** and detects a tool call another
    plugin rewrote after the session log recorded it.
 6. **Asks before the agent writes a file that changes future behaviour** — agent settings and
-   hooks, `CLAUDE.md`, `.cursor/rules/**`, `.vscode/tasks.json`, `.mcp.json`, git hooks, CI
-   workflows, shell startup files — and before it writes a `*_BASE_URL` that would redirect a
-   provider credential.
+   hooks, `CLAUDE.md`, `.claude/rules/**` and the other agent rules directories, prompt
+   templates, `.vscode/tasks.json`, `.mcp.json`, git hooks, CI workflows, shell startup files,
+   `pnpm-workspace.yaml` — and before it writes a `*_BASE_URL` that would redirect a provider
+   credential.
 7. **Writes an audit record for every decision** — rule id, rule version, offsets, keyed hash.
    Never the secret, never the path or command that matched. `dsh-dlp report` reads it back.
 

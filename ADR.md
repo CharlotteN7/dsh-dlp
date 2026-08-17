@@ -663,3 +663,45 @@ fails a named CI leg instead of a user's install.
 release upstream's own `^4.0.1` ranges resolve to, so the exact pin excludes nothing that exists —
 and it is the object model the harness and every plugin share, where a second copy in the tree does
 not compose.
+
+## 20. What the `ask` tier's path table covers, and the one candidate left out
+
+Three of the four agent rules directories were in `config-agent-rules` and `.claude/rules` was
+not. That is not a judgement about Claude, it is an omission: VS Code's own custom-instructions
+documentation lists a "Workspace (Claude format) `.claude/rules` folder" beside `AGENTS.md` and
+`CLAUDE.md` as a location it detects and applies on its own, so the directory is loaded by an
+editor nobody configured for Claude at all. Adding it is closing a gap in a table, not adding a
+rule class, so the rule's `version` moves to 2 and its id stays.
+
+`.prompts/**/*.prompttemplate` (CVE-2026-46580) is the same class one file type over: a template
+a later session loads without the model asking for it. It is anchored at the `.prompts`
+directory rather than at the extension alone, because a file carrying that extension somewhere
+else is not loaded and prompting on it would be a false positive with nothing behind it.
+
+**`.npmrc` needed nothing here, and that is worth writing down rather than adding a redundant
+rule.** It is already on the guard floor as `dsh-dlp/path-npmrc` with `every-call` enforcement,
+so a write to it is denied outright — and §18's rule that a call the floor will deny is left to
+the floor means an `ask` rule for the same path could never fire. Verified against the current
+source before the change: `matchCredentialPath('/srv/repo/.npmrc')` reports `path-npmrc` while
+`evaluateConfigWrite` reports nothing, which is the floor doing its job, not a gap.
+
+**`pnpm-workspace.yaml` was weighed and is in.** The security case is the provider's own: pnpm
+reads `registry`, `registries` and `namedRegistries` from that file, and its documentation says
+that since v11.5.3 it refuses to expand `${…}` in those settings "Because `pnpm-workspace.yaml`
+is committed to the repository, expanding env variables in registry URLs could be exploited by a
+malicious repository to leak secrets from the environment to an attacker-controlled registry."
+That mitigation removes the env-var exfiltration shape and leaves the redirection itself intact:
+a literal hostile `registry:` is still obeyed on the next install.
+
+The false-positive case against it is real — pnpm moved every non-auth setting out of `.npmrc`
+and into this file, so it is edited more often than it used to be. It is admitted anyway because
+the bar for this tier is *comparative*, not absolute: the table already asks about `CLAUDE.md`,
+`AGENTS.md` and `.github/workflows/**`, which an agent edits far more often than a workspace
+manifest. A rule that prompts less often than the tier's noisiest existing rule cannot be the
+one that gets the tier switched off.
+
+The narrower alternative — a `content` rule matching a `registry:` assignment, the shape §18's
+`config-api-base-url` uses — was rejected. `registry` is an ordinary key in Docker, Kubernetes
+and schema-registry configuration, and a content rule ignores where the bytes are going, so it
+would prompt on ordinary work in repositories that have never seen pnpm. `*_BASE_URL` survives
+that test because the spelling is provider-credential-specific; `registry:` does not.

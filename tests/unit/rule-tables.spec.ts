@@ -297,6 +297,14 @@ const CONFIG_WRITE_FIXTURES: Readonly<Record<string, Fixture>> = {
   },
   'dsh-dlp/config-agent-instructions': { match: '/srv/repo/AGENTS.md', miss: '/srv/repo/docs/agents-guide.md' },
   'dsh-dlp/config-agent-rules': { match: '/srv/repo/.cursor/rules/setup.mdc', miss: '/srv/repo/src/rules/index.ts' },
+  'dsh-dlp/config-prompt-template': {
+    match: '/srv/repo/.prompts/review.prompttemplate',
+    miss: '/srv/repo/.prompts/README.md',
+  },
+  'dsh-dlp/config-pnpm-workspace': {
+    match: '/srv/repo/pnpm-workspace.yaml',
+    miss: '/srv/repo/pnpm-lock.yaml',
+  },
   'dsh-dlp/config-mcp-manifest': { match: '/srv/repo/.mcp.json', miss: '/srv/repo/docs/mcp.json' },
   'dsh-dlp/config-editor-tasks': { match: '/srv/repo/.vscode/tasks.json', miss: '/srv/repo/.vscode/extensions.json' },
   'dsh-dlp/config-git': { match: '/srv/repo/.git/hooks/pre-commit', miss: '/srv/repo/.gitignore' },

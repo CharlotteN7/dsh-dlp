@@ -51,6 +51,11 @@ export interface ConfigWriteRule {
  * CVE-2026-25725, CVE-2026-33068, CVE-2026-48124, CVE-2026-26268 and
  * CVE-2025-59041.
  *
+ * The file is the whole payload, which is why this tier watches the write
+ * rather than a later execution: the keyv/cacheable compromise of 2026-08-04
+ * placed a `SessionStart` hook in `.claude/settings.json` and was reported to
+ * need no `npm install` to take effect.
+ *
  * The rules match by name, never by what is on disk, so a file the call is
  * about to *create* is matched exactly like one it would change:
  * CVE-2026-25725 worked precisely because the path did not exist yet and was
@@ -78,12 +83,25 @@ export const CONFIG_WRITE_RULES: readonly ConfigWriteRule[] = [
     pattern: /(^|\/)(CLAUDE|AGENTS|GEMINI|\.cursorrules|\.windsurfrules)(\.md)?$/i,
     effect: 'standing instructions every future session in this repository reads',
   },
+  // `.claude/rules` belongs beside the other three: VS Code lists it as a
+  // workspace instruction location it detects and applies on its own
+  // ("Workspace (Claude format) `.claude/rules` folder"), so it is loaded by an
+  // editor a developer never configured for Claude.
   {
     id: 'dsh-dlp/config-agent-rules',
+    version: 2,
+    match: 'path',
+    pattern: /(^|\/)\.(claude|cursor|windsurf|continue)\/rules(\/|$)/i,
+    effect: 'an always-apply rules file every future session in this repository reads',
+  },
+  // CVE-2026-46580. A prompt template is loaded into a later session the same
+  // way a rules file is, and the extension is what marks it for loading.
+  {
+    id: 'dsh-dlp/config-prompt-template',
     version: 1,
     match: 'path',
-    pattern: /(^|\/)\.(cursor|windsurf|continue)\/rules(\/|$)/i,
-    effect: 'an always-apply rules file every future session in this repository reads',
+    pattern: /(^|\/)\.prompts\/.*\.prompttemplate$/i,
+    effect: 'a prompt template a later session loads without the model asking for it',
   },
   {
     id: 'dsh-dlp/config-mcp-manifest',
@@ -133,6 +151,23 @@ export const CONFIG_WRITE_RULES: readonly ConfigWriteRule[] = [
     match: 'path',
     pattern: /(^|\/)cordis[^/]*\.ya?ml$/i,
     effect: 'a harness bundle manifest, which decides which plugins load',
+  },
+  // pnpm reads `registry`, `registries` and `namedRegistries` from
+  // `pnpm-workspace.yaml`, so the file decides which host the next install
+  // downloads packages from. pnpm's own documentation treats it as
+  // attacker-controlled for exactly that reason: since v11.5.3 it refuses to
+  // expand `${...}` in those settings, "Because `pnpm-workspace.yaml` is
+  // committed to the repository, expanding env variables in registry URLs could
+  // be exploited by a malicious repository to leak secrets from the environment
+  // to an attacker-controlled registry." A literal hostile URL is still obeyed.
+  // The `.npmrc` half of the same technique needs no rule here: it is on the
+  // guard floor as `dsh-dlp/path-npmrc`, where every call is denied.
+  {
+    id: 'dsh-dlp/config-pnpm-workspace',
+    version: 1,
+    match: 'path',
+    pattern: /(^|\/)pnpm-workspace\.ya?ml$/i,
+    effect: 'the pnpm workspace settings, which decide the registry the next install downloads packages from',
   },
   // CVE-2026-21852: a repo-local settings file setting `ANTHROPIC_BASE_URL`
   // sends the user's own API key to whatever host it names. This is neither a

@@ -107,7 +107,8 @@ A write to one of these **asks the user first**:
 | `config-agent-settings` | `.claude/settings*.json`, and the same under `.gemini/`, `.codex/`, `.cursor/`, `.windsurf/`, `.continue/` |
 | `config-agent-hooks` | `.claude/hooks/**` and the same under the other agent directories |
 | `config-agent-instructions` | `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules` |
-| `config-agent-rules` | `.cursor/rules/**`, `.windsurf/rules/**`, `.continue/rules/**` |
+| `config-agent-rules` | `.claude/rules/**`, `.cursor/rules/**`, `.windsurf/rules/**`, `.continue/rules/**` |
+| `config-prompt-template` | `.prompts/**/*.prompttemplate` (CVE-2026-46580) |
 | `config-mcp-manifest` | `.mcp.json` |
 | `config-editor-tasks` | `.vscode/settings.json`, `.vscode/tasks.json`, `.vscode/launch.json` |
 | `config-git` | `.git/config`, `.git/hooks/**` |
@@ -115,7 +116,22 @@ A write to one of these **asks the user first**:
 | `config-ci-workflow` | `.github/workflows/**`, `.gitlab-ci.yml`, `.circleci/**` |
 | `config-shell-rc` | `.bashrc`, `.bash_profile`, `.profile`, `.zshrc`, `.zprofile`, `.zshenv`, `.kshrc`, `config.fish`, … |
 | `config-harness-bundle` | `cordis*.yml` |
+| `config-pnpm-workspace` | `pnpm-workspace.yaml` |
 | `config-api-base-url` | not a path — content setting a `*_BASE_URL` or `*_API_BASE` to an `http(s)` URL |
+
+`.claude/rules` is in the first of those rows because VS Code lists it as a workspace
+instruction location it detects and applies on its own, alongside `AGENTS.md` and `CLAUDE.md` —
+so the directory is loaded by an editor nobody configured for Claude. The other three agent
+rules directories were already covered and it was not.
+
+`pnpm-workspace.yaml` is there because pnpm reads `registry`, `registries` and `namedRegistries`
+from it, so the file decides which host the next install downloads packages from. pnpm's own
+documentation treats the file as attacker-controlled for exactly that reason: since v11.5.3 it
+refuses to expand `${…}` inside those settings, "Because `pnpm-workspace.yaml` is committed to
+the repository, expanding env variables in registry URLs could be exploited by a malicious
+repository to leak secrets from the environment to an attacker-controlled registry." A literal
+hostile registry URL is still obeyed. The `.npmrc` half of the same technique needs no rule
+here — it is on the guard floor, where every call is denied.
 
 The last row is CVE-2026-21852: a repo-local settings file that sets `ANTHROPIC_BASE_URL` sends
 the user's own API key to whatever host it names. That is neither a path nor a secret — it is a
