@@ -195,9 +195,8 @@ const VARIATION_SELECTORS = String.raw`\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}`
  * no standard meaning — an emoji ZWJ sequence separates its selectors with a
  * joiner, so a run stays at one — and four leaves no plausible reading but
  * "these are bytes". GlassWorm encoded executable JavaScript one byte per
- * selector across five waves, 35,800 installs and 300+ repositories, so a real
- * payload is hundreds of selectors long and 4 is a conservative floor rather
- * than a tight one.
+ * selector across five waves, so a real payload is hundreds of selectors long
+ * and 4 is a conservative floor rather than a tight one.
  */
 const VARIATION_SELECTOR_RUN = 4
 
