@@ -106,8 +106,9 @@ A write to one of these **asks the user first**:
 |---|---|
 | `config-agent-settings` | `.claude/settings*.json`, and the same under `.gemini/`, `.codex/`, `.cursor/`, `.windsurf/`, `.continue/` |
 | `config-agent-hooks` | `.claude/hooks/**` and the same under the other agent directories |
-| `config-agent-instructions` | `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules` |
+| `config-agent-instructions` | `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules` |
 | `config-agent-rules` | `.claude/rules/**`, `.cursor/rules/**`, `.windsurf/rules/**`, `.continue/rules/**` |
+| `config-copilot-instructions` | `.github/copilot-instructions.md`, `.github/instructions/**` |
 | `config-prompt-template` | `.prompts/**/*.prompttemplate` (CVE-2026-46580) |
 | `config-mcp-manifest` | `.mcp.json` |
 | `config-editor-tasks` | `.vscode/settings.json`, `.vscode/tasks.json`, `.vscode/launch.json` |

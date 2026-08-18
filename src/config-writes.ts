@@ -76,11 +76,26 @@ export const CONFIG_WRITE_RULES: readonly ConfigWriteRule[] = [
     pattern: /(^|\/)\.(claude|gemini|codex|windsurf|continue)\/hooks(\/|$)/i,
     effect: 'an agent hook, which runs on a session event without the model asking for it',
   },
+  // Copilot reads these without any agent asking it to: VS Code documents
+  // `.github/copilot-instructions.md` and every `.github/instructions/**.md`
+  // as workspace instruction files it applies on its own. They are separate
+  // from `config-ci-workflow`, which governs what CI *runs* rather than what a
+  // model is told.
   {
-    id: 'dsh-dlp/config-agent-instructions',
+    id: 'dsh-dlp/config-copilot-instructions',
     version: 1,
     match: 'path',
-    pattern: /(^|\/)(CLAUDE|AGENTS|GEMINI|\.cursorrules|\.windsurfrules)(\.md)?$/i,
+    pattern: /(^|\/)\.github\/(copilot-instructions\.md$|instructions\/)/i,
+    effect: 'standing instructions the editor feeds to every future session',
+  },
+  {
+    id: 'dsh-dlp/config-agent-instructions',
+    version: 2,
+    // `CLAUDE.local.md` is the personal, git-ignored companion to `CLAUDE.md`
+    // and is read the same way, so covering one and not the other left the
+    // quieter of the two files unguarded.
+    pattern: /(^|\/)(CLAUDE(\.local)?|AGENTS|GEMINI|\.cursorrules|\.windsurfrules)(\.md)?$/i,
+    match: 'path',
     effect: 'standing instructions every future session in this repository reads',
   },
   // `.claude/rules` belongs beside the other three: VS Code lists it as a

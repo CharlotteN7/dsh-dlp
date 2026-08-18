@@ -311,6 +311,7 @@ const CONFIG_WRITE_FIXTURES: Readonly<Record<string, Fixture>> = {
   },
   'dsh-dlp/config-agent-instructions': { match: '/srv/repo/AGENTS.md', miss: '/srv/repo/docs/agents-guide.md' },
   'dsh-dlp/config-agent-rules': { match: '/srv/repo/.cursor/rules/setup.mdc', miss: '/srv/repo/src/rules/index.ts' },
+  'dsh-dlp/config-copilot-instructions': { match: '/srv/repo/.github/instructions/style.md', miss: '/srv/repo/.github/ISSUE_TEMPLATE/bug.md' },
   'dsh-dlp/config-prompt-template': {
     match: '/srv/repo/.prompts/review.prompttemplate',
     miss: '/srv/repo/.prompts/README.md',
