@@ -62,6 +62,27 @@ describe('credential paths', () => {
     expect(matchCredentialPath(candidate)?.id).toBe(ruleId)
   })
 
+  // An MCP manifest carries each server's `env`, so it is credential material
+  // under every agent directory the sibling `auth.json` rule already names,
+  // including the two the manifest rule left out and Cursor's no-dot spelling.
+  it.each([
+    '/home/dev/.cursor/mcp.json',
+    '/home/dev/.composer/mcp.json',
+    '/home/dev/.aider/mcp.json',
+    '/home/dev/.config/Cursor/mcp.json',
+  ])('denies %s', (candidate) => {
+    expect(matchCredentialPath(candidate)?.id).toBe('dsh-dlp/path-agent-mcp-config')
+  })
+
+  // `~/.aws/` and `~/.azure/` match at any depth and `~/.kube/` did not, so a
+  // cached credential one directory deeper was reachable.
+  it.each(['/home/dev/.kube/config', '/home/dev/.kube/cache/oidc-login/abc', '/home/dev/.kube'])(
+    'denies %s',
+    (candidate) => {
+      expect(matchCredentialPath(candidate)?.id).toBe('dsh-dlp/path-kubeconfig')
+    },
+  )
+
   it.each([
     ['a trailing slash', '/home/dev/.env/'],
     ['a renamed ssh directory', '/home/dev/.ssh_x/id_rsa2'],

@@ -65,7 +65,9 @@ export const CREDENTIAL_PATH_RULES: readonly CredentialPathRule[] = [
   { id: 'dsh-dlp/path-pypirc', version: 1, pattern: /(^|\/)\.pypirc$/i },
   { id: 'dsh-dlp/path-git-credentials', version: 1, pattern: /(^|\/)\.git-credentials$/i },
   { id: 'dsh-dlp/path-gh-config', version: 1, pattern: /(^|\/)\.config\/gh(\/|$)/i },
-  { id: 'dsh-dlp/path-kubeconfig', version: 2, pattern: /(^|\/)(\.kube\/[^/]*|kubeconfig[^/]*)$/i },
+  // `.kube` matches at any depth, like `.aws` and `.azure`: the cached OIDC and
+  // exec-plugin tokens sit under `~/.kube/cache/`, not beside the config file.
+  { id: 'dsh-dlp/path-kubeconfig', version: 3, pattern: /(^|\/)(\.kube(\/|$)|kubeconfig[^/]*$)/i },
   { id: 'dsh-dlp/path-kubernetes-conf', version: 1, pattern: /(^|\/)kubernetes\/[^/]*\.conf$/i },
   { id: 'dsh-dlp/path-docker-config', version: 2, pattern: /(^|\/)(\.docker\/config\.json|\.dockercfg)$/i },
   { id: 'dsh-dlp/path-gcloud-credentials', version: 1, pattern: /(^|\/)\.config\/gcloud\/[^/]*credential[^/]*$/i },
@@ -78,8 +80,10 @@ export const CREDENTIAL_PATH_RULES: readonly CredentialPathRule[] = [
   // token file whatever else the directory holds.
   { id: 'dsh-dlp/path-agent-auth', version: 1, pattern: /(^|\/)\.?(codex|cursor|composer|windsurf|continue|aider|claude|gemini)\/auth\.json$/i },
   // An MCP manifest carries each server's `env`, which is where its API keys
-  // are written.
-  { id: 'dsh-dlp/path-agent-mcp-config', version: 1, pattern: /(^|\/)\.(cursor|windsurf|continue|codex|claude|gemini)\/mcp\.json$/i },
+  // are written. The directory alternation is the one above: an agent that
+  // keeps an `auth.json` keeps its manifest beside it, and Cursor's own
+  // directory is spelled without the dot under `~/.config`.
+  { id: 'dsh-dlp/path-agent-mcp-config', version: 2, pattern: /(^|\/)\.?(codex|cursor|composer|windsurf|continue|aider|claude|gemini)\/mcp\.json$/i },
   // Cursor keeps session tokens in a SQLite state database rather than a
   // credential file.
   { id: 'dsh-dlp/path-editor-state-db', version: 1, pattern: /(^|\/)state\.vscdb(-journal|-wal|-shm)?$/i },
