@@ -10,16 +10,20 @@ import {
   APPROVAL_SUPPRESSION_RULES,
   evaluateApprovalSuppression,
   matchApprovalSuppression,
-  normalizeArgumentKey,
+  normalizeArgumentToken,
 } from '../../src/approvals.ts'
 
-describe('the spelling an argument key is matched under', () => {
+describe('the spelling a key or a value is matched under', () => {
   it.each(['non_interactive', 'nonInteractive', 'non-interactive', 'NON_INTERACTIVE'])(
     'reads %s as one name',
     (key) => {
-      expect(normalizeArgumentKey(key)).toBe('noninteractive')
+      expect(normalizeArgumentToken(key)).toBe('noninteractive')
     },
   )
+
+  it.each(['full-auto', 'full_auto', 'fullAuto', 'FULL-AUTO'])('reads %s as one value', (value) => {
+    expect(normalizeArgumentToken(value)).toBe('fullauto')
+  })
 })
 
 describe('an argument that turns off its own confirmation', () => {
@@ -38,6 +42,19 @@ describe('an argument that turns off its own confirmation', () => {
     ['a value naming no mode at all', 'ask'],
   ])('abstains on %s', (_label, value) => {
     expect(matchApprovalSuppression({ non_interactive: value })).toBeUndefined()
+  })
+
+  // Codex spells the mode `full-auto`, and a tool is free to send `full_auto`
+  // for the same setting.
+  it.each(['fullauto', 'full-auto', 'full_auto', 'FULL-AUTO', 'auto-approve', 'auto_edit'])(
+    'reads %s as the mode that approves on the model\'s behalf',
+    (value) => {
+      expect(matchApprovalSuppression({ approval_mode: value })?.id).toBe('dsh-dlp/approval-mode-auto')
+    },
+  )
+
+  it.each(['on-demand', 'ask-every-time', 'read-only'])('abstains on the mode %s, which keeps the prompt', (value) => {
+    expect(matchApprovalSuppression({ approval_mode: value })).toBeUndefined()
   })
 
   it('is found under any depth of the arguments, because a batch nests its items', () => {

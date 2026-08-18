@@ -29,7 +29,7 @@ import { isReadOnlyTool } from './paths.ts'
 export interface ArgumentCondition {
   /** Matched against the key lowercased with `_`, `-` and `.` removed. */
   readonly key: RegExp
-  /** Matched against the value's scalar rendering, lowercased. */
+  /** Matched against the value under the same normalization as the key. */
   readonly value: RegExp
 }
 
@@ -58,7 +58,13 @@ export interface ApprovalSuppressionRule {
  */
 const SUPPRESSING_TRUE = /^(?:true|yes|on|1)$/
 
-/** Values of an approval-mode argument that name the absence of a prompt. */
+/**
+ * Values of an approval-mode argument that name the absence of a prompt.
+ *
+ * One spelling per mode, because the value is normalized the same way the key
+ * is: `full-auto` — which is what Codex writes — `full_auto` and `fullauto`
+ * are one entry rather than three.
+ */
 const SUPPRESSING_MODE = /^(?:auto|autoapprove|autoedit|never|none|bypass|fullauto|yolo)$/
 
 /**
@@ -80,7 +86,7 @@ export const APPROVAL_SUPPRESSION_RULES: readonly ApprovalSuppressionRule[] = [
   // CVE-2026-56075.
   {
     id: 'dsh-dlp/approval-mode-auto',
-    version: 1,
+    version: 2,
     condition: { key: /^approval(?:mode|policy|setting)$/, value: SUPPRESSING_MODE },
     effect: 'an approval mode that approves on the model\'s behalf instead of asking',
   },
@@ -96,24 +102,32 @@ export const APPROVAL_SUPPRESSION_RULES: readonly ApprovalSuppressionRule[] = [
 ]
 
 /**
- * The spelling one argument key is matched under: lowercase, with the
+ * The spelling one key or value is matched under: lowercase, with the
  * separators that distinguish `non_interactive`, `nonInteractive` and
- * `non-interactive` removed.
- * @param key - the key as the tool declared it.
+ * `non-interactive` — and `full-auto` from `full_auto` — removed.
+ *
+ * Values take the same normalization as keys, and that is the whole reason
+ * `approval_mode: full-auto`, which is the spelling Codex writes, reaches the
+ * table: enumerating the separator variants one at a time only ever covers the
+ * spellings someone already thought of. Every value the rules name is a single
+ * word with no legitimate hyphenated or dotted form, so folding the separators
+ * away cannot pull an ordinary value in — `on-demand` and `ask-every-time`
+ * stay outside the table.
+ * @param text - a key as the tool declared it, or a scalar value it carried.
  * @returns the normalized spelling.
  */
-export function normalizeArgumentKey(key: string): string {
-  return key.toLowerCase().replace(/[_.-]/g, '')
+export function normalizeArgumentToken(text: string): string {
+  return text.toLowerCase().replace(/[_.-]/g, '')
 }
 
 /**
  * One argument value as a string, for the values a flag can take.
  * @param node - the value under one argument key.
- * @returns the lowercased rendering, or `undefined` for an object or a list.
+ * @returns the normalized rendering, or `undefined` for an object or a list.
  */
 function scalarValue(node: unknown): string | undefined {
   if (typeof node === 'boolean' || typeof node === 'number') return String(node)
-  if (typeof node === 'string') return node.trim().toLowerCase()
+  if (typeof node === 'string') return normalizeArgumentToken(node.trim())
   return undefined
 }
 
@@ -150,7 +164,7 @@ export function matchApprovalSuppression(
     const entries = new Map<string, string>()
     for (const [key, value] of Object.entries(node)) {
       const scalar = scalarValue(value)
-      if (scalar !== undefined) entries.set(normalizeArgumentKey(key), scalar)
+      if (scalar !== undefined) entries.set(normalizeArgumentToken(key), scalar)
     }
     found = rules.find(rule =>
       satisfies(entries, rule.condition)
