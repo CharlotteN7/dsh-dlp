@@ -266,7 +266,7 @@ describe('the report', () => {
     expect(report).toContain('1 decision(s)')
     expect(report).toContain('since 2026-08-16T00:00:00.000Z')
     expect(report).toContain('session session-b')
-    expect(report).toContain('only decisions that let the call through')
+    expect(report).toContain('decisions that stopped a call left out')
     expect(report).not.toContain('guard-deny')
   })
 

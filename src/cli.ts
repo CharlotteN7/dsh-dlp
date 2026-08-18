@@ -105,7 +105,7 @@ export interface ReportOptions {
   /** Epoch milliseconds; records before it are left out. */
   readonly since?: number
   readonly session?: string
-  /** Keep only the decisions that let the call through. */
+  /** Leave out the decisions that stopped a call; see {@link DENYING_KINDS}. */
   readonly wouldHave: boolean
 }
 
@@ -126,9 +126,9 @@ export const USAGE = [
   '  --since <when>   only decisions at or after an ISO timestamp, or a span back',
   '                   from now written as 30m, 24h or 7d',
   '  --session <id>   only decisions from one session',
-  '  --would-have     only the decisions that let the call through: the redactions',
-  '                   and invisible-character findings, which is what a policy that',
-  '                   denied instead of rewriting would have blocked',
+  '  --would-have     leave out the decisions that stopped a call, keeping the',
+  '                   redactions, the invisible-character findings, the asks and',
+  '                   the neutralised images',
   '  -h, --help       print this text',
 ].join('\n')
 
@@ -298,7 +298,7 @@ export function formatReport(
   const lines = [`dsh-dlp: ${selected.length} decision(s) in ${options.log}`]
   if (options.since !== undefined) lines.push(`  since ${new Date(options.since).toISOString()}`)
   if (options.session !== undefined) lines.push(`  session ${options.session}`)
-  if (options.wouldHave) lines.push('  only decisions that let the call through')
+  if (options.wouldHave) lines.push('  decisions that stopped a call left out')
   if (unreadable > 0) lines.push(`  ${unreadable} line(s) were not readable as records`)
   if (selected.length === 0) return lines
 

@@ -71,14 +71,17 @@ and no `dsh` on the path:
 dsh-dlp report                      # everything in $DSH_HOME/dsh-dlp.audit.jsonl
 dsh-dlp report --since 24h          # or an ISO timestamp
 dsh-dlp report --session <id>
-dsh-dlp report --would-have         # only the calls that were let through
+dsh-dlp report --would-have         # everything except the denials
 dsh-dlp report --log /var/log/dsh-dlp.audit.jsonl
 ```
 
 It prints counts by decision, by rule, by tool and by invisible-character class, then the ten
-most recent decisions. `--would-have` drops the denials and leaves the redactions and the
-invisible-character findings: those are the calls that ran, with their results rewritten, and
-they are what a policy that denied instead of rewriting would have blocked.
+most recent decisions. `--would-have` drops exactly the three kinds that stopped a call —
+`guard-deny`, `pre-execute-deny` and `execution-mutation` — and keeps everything else: the
+redactions and invisible-character findings, which are calls that ran with their results
+rewritten, and also the `pre-execute-ask` and `assistant-image-neutralized` records, which are
+neither. The sink does not record how a user answered an ask, so a kept `ask` record is not
+evidence that call ran.
 
 The sink is append-only and a run can be interrupted mid-append, so a line that does not parse
 as a record is counted and reported rather than trusted. If the deployment set `auditLog` to
