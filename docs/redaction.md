@@ -148,15 +148,19 @@ under Node 22.23.2:
 
 | Input | Cost |
 |---|---|
-| clean Latin-1 text | 0.002 ms |
+| clean Latin-1 text | 0.33 ms |
 | one hidden instruction (69 characters) | 0.355 ms |
 | 7,653 separate runs | 7.9 ms |
 | 512 KB of alternating invisible characters (524,286 runs) | 56–113 ms |
 
-Clean text is free because every character in the table is above `U+00FF`: the regular
-expression engine rejects a Latin-1 string on its encoding without scanning it. The last row is
-a crafted input, not a plausible one, and it is the only case that leaves the ≤10 ms per result
-budget; `maxScanBytes` caps tier 2 only, so tier 1 always sees the whole result.
+Clean text costs a third of a millisecond rather than nothing, and the split is worth stating.
+The six character-class rules **are** free: every character they name is above `U+00FF`, so the
+combined-class pass rejects a Latin-1 string on its encoding without scanning it — 0.0006 ms
+over the same 512 KB. The `control-sequence` class cannot be expressed as a character range,
+its body is ASCII, and it is therefore scanned over the whole input whatever the input holds;
+that pass alone is 0.20 ms and is what the first row measures. The last row is a crafted input,
+not a plausible one, and it is the only case that leaves the ≤10 ms per result budget;
+`maxScanBytes` caps tier 2 only, so tier 1 always sees the whole result.
 
 Measured cost of a tier-2 scan: 0.78 ms at 1 KB, 0.91 ms at 16 KB, 2.22 ms at 128 KB, 5.11 ms
 at 512 KB. `maxScanBytes` caps **tier 2 only**, once per result, over the joined rendering;

@@ -247,6 +247,15 @@ An `auth.json` or an `mcp.json` under an agent's own directory holds nothing but
 an MCP manifest's `env` is where a server's API keys live — so both are `every-call`, as are
 Cursor's `state.vscdb`, `Library/Keychains/**`, `*.tfvars` and `terraform.tfstate`.
 
+The two rules read the *same* directory list, which they did not at first: the manifest rule
+named six dotted directories while the `auth.json` rule named eight and accepted the no-dot
+spelling Cursor uses under `~/.config`. An agent that keeps a token file keeps its manifest
+beside it, so `.composer/mcp.json`, `.aider/mcp.json` and `Cursor/mcp.json` were credential
+stores the table described and did not match. `.kube` was the same shape of gap one level down:
+it matched its direct children only, while `.aws` and `.azure` match at any depth, so the
+cached tokens under `~/.kube/cache/` were reachable. Both are closed by aligning a pattern with
+its neighbours rather than by adding a rule class, so each id stays and its `version` moves.
+
 A `settings.json` under `~/.claude` or `~/.gemini` is not that. It is configuration, and a user
 asking the agent why their own agent behaves a certain way is an ordinary request, so it is
 `writes-only`. It is anchored at the *home directory*, resolved at mount for the same reason
@@ -385,12 +394,15 @@ that to an invisible character would delete the visible word it hid inside, whic
 worse result and a false positive an operator cannot check.
 
 The scan is one pass with a combined character class built from the same table the per-class
-patterns come from, so the two cannot drift. Cost is in README.md, measured rather than
-estimated: clean Latin-1 text is free because every character in the table is above `U+00FF`
-and the regular-expression engine rejects the string on its encoding. A crafted 512 KB result
-of alternating invisible characters costs 56–113 ms, over the per-result budget; it is
-recorded rather than capped, because capping tier 1 would leave a hidden instruction past the
-cap unstripped and unreported.
+patterns come from, so the two cannot drift. Cost is in `docs/redaction.md`, measured rather
+than estimated. The character-class pass is free on clean Latin-1 text — every character in the
+combined class is above `U+00FF`, so the engine rejects the string on its encoding — but the
+scan as a whole is not, because the control-sequence class has an ASCII body, cannot be
+expressed as a character range, and is therefore scanned over the whole input whatever the
+input holds. That is the 0.33 ms floor a clean 512 KB result pays, well inside the ≤10 ms
+budget. A crafted 512 KB result of alternating invisible characters costs 56–113 ms, over the
+per-result budget; it is recorded rather than capped, because capping tier 1 would leave a
+hidden instruction past the cap unstripped and unreported.
 
 UTS #39 confusables are not attempted. A homoglyph is a visible, legitimately-encoded
 character, detecting it needs a data table, and it defeats every rule in this package. README
@@ -676,6 +688,11 @@ documentation lists a "Workspace (Claude format) `.claude/rules` folder" beside 
 editor nobody configured for Claude at all. Adding it is closing a gap in a table, not adding a
 rule class, so the rule's `version` moves to 2 and its id stays.
 
+`config-agent-hooks` carried the same omission in the other direction: five agent directories
+and not `.cursor`, whose settings file the sibling `config-agent-settings` rule already covers.
+A hooks directory under one agent and not another is not a decision anything supports, so the
+alternation is now the same six in both rules and the hooks rule's `version` moves to 2.
+
 `.prompts/**/*.prompttemplate` (CVE-2026-46580) is the same class one file type over: a template
 a later session loads without the model asking for it. It is anchored at the `.prompts`
 directory rather than at the extension alone, because a file carrying that extension somewhere
@@ -745,6 +762,19 @@ arguments live. Keys are compared with `_`, `-` and `.` removed and case folded,
 covers `non_interactive`, `nonInteractive` and `non-interactive`. Only the affirmative values
 match: a rule that fired on `non_interactive: false` would prompt about the argument that asks
 *for* a prompt.
+
+**A string value takes the same normalization as the key.** Normalizing only the key left
+`approval_mode: full-auto` outside the table, which is the spelling Codex itself writes, while
+`fullauto` matched. The alternative was to add the separator variants to the value pattern one
+at a time; it was rejected because it only ever covers the spellings someone already thought
+of, and `full_auto` and `fullAuto` are the same setting by any reading. The risk of folding
+separators away is pulling a legitimate value in, and it was weighed against the values the
+rules actually name: `auto`, `never`, `none`, `bypass`, `yolo`, `pending` and the affirmative
+words are single words with no hyphenated or dotted form that means something else. A mode a
+user does want a prompt for is spelled the other way round — `on-demand`, `ask-every-time` —
+and normalizing those changes nothing about whether they match. Numbers keep their own
+rendering, so a value is never renumbered by the fold. The rule's `version` moves to 2,
+because an audit record written before it describes a narrower set of values.
 
 **Its own toggle.** `approvalSuppressionAsk` is separate from `configWriteAsk` because the two
 rule classes have separate false-positive profiles — a deployment whose agents drive batch tools

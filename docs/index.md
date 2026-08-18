@@ -24,15 +24,20 @@ More limits worth stating up front:
   result after it was redacted. `ctx.tools.guard()` is order-independent only because it has no
   allow arm. A `tools/pre-execute` deny also skips guards entirely, so the audit sink cannot
   claim to have seen every call.
-- **The shell-command arm is advisory pattern-matching.** A `bash` command line is split on
-  shell-ish separators and each token is tested as a path. That catches an unobfuscated
-  `cat ~/.ssh/id_rsa`. It catches nothing that tries: `cat ~/.netr?` (one glob character),
-  `cat ~/.s""sh/id_r""sa`, `find ~ -name 'id_*' -exec cat {} +`, a `$(printf ...)`
-  reassembly, a base64 round-trip of the path, or `python3 -c` opening the file — every one
-  of those was verified to read the file with the guard abstaining. **Do not count this arm
-  as a control.** A shell command is a program, not a path, and the only way to decide what
-  it will open is to run it. If the agent has a shell, credential files need filesystem
-  permissions or a sandbox, not this plugin.
+- **The shell-command arm is advisory pattern-matching.** A `bash` command line is tested
+  whole, and then split on shell-ish separators with each token tested as a path. What that
+  covers is any command *spelling* a credential path, whatever program would open it:
+  `python3 -c "import os;print(open(os.path.expanduser('~/.ssh/id_rsa')).read())"`,
+  `node -e "…readFileSync('~/.aws/credentials')…"`, `curl -F f=@~/.ssh/id_rsa` and
+  `cat $(printf '%s' ~/.ssh/id_rsa)` are all denied — the interpreter is irrelevant, and so is
+  a substitution that still ends up quoting the path in full. What defeats it is anything that
+  changes the spelling, each verified to read the file with the guard abstaining:
+  `cat ~/.netr?` (one glob character), `cat ~/.s""sh/id_r""sa` (quote-splitting),
+  `find ~ -name 'id_*' -exec cat {} +` (the path is never written), `a=~/.ss; b=h/id_r; c=sa;
+  cat $a$b$c` (assembled from pieces), and a base64 round-trip of the path. **Do not count
+  this arm as a control.** A shell command is a program, not a path, and the only way to
+  decide what it will open is to run it. If the agent has a shell, credential files need
+  filesystem permissions or a sandbox, not this plugin.
 - **Tool arguments are never masked.** Model-visible implies logged: arguments are already in
   the session log and already presented to the model, so rewriting them would desynchronise
   the log from what actually ran. Argument-level DLP here is *denial with a reason the model

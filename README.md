@@ -27,8 +27,11 @@ built as an out-of-repo plugin.
 7. **Asks before a call switches off its own confirmation** — `non_interactive: true`,
    `approval_mode: auto`, an `apply` whose approval is still pending. Both `ask` tiers are
    prompts rather than controls: they live at `tools/pre-execute` and can be neutralised.
-8. **Writes an audit record for every decision** — rule id, rule version, offsets, keyed hash.
-   Never the secret, never the path or command that matched. `dsh-dlp report` reads it back.
+8. **Writes an audit record for every decision.** A redaction or denial names the rule, its
+   version, the offsets and a keyed hash; the three kinds with no matched region to describe —
+   an ask, a rewritten call, a neutralised image — carry a rule id, the changed field names or
+   the destination hostname instead. Never the secret, never the path or command that matched.
+   `dsh-dlp report` reads it back.
 
 ## What this is not
 
@@ -44,9 +47,12 @@ Three limits worth knowing before you rely on it:
 - **Only the guard floor is unconditional.** Every other seam can be neutralised by a listener
   registered ahead of ours. `ctx.tools.guard()` is order-independent only because it has no allow
   arm.
-- **The shell-command arm is advisory pattern-matching.** It catches an unobfuscated
-  `cat ~/.ssh/id_rsa` and nothing that tries — one glob character, a `$(printf …)` reassembly or
-  `python3 -c` all defeat it, each verified. **Do not count this arm as a control.**
+- **The shell-command arm is advisory pattern-matching.** It tests the whole command line and
+  each of its tokens, so a credential path left *spelled* in the command is caught whatever
+  program would open it: `python3 -c "open('~/.ssh/id_rsa')"` is denied. Changing the spelling
+  defeats it — one glob character, quote-splitting, `find -exec`, a substitution that assembles
+  the path from pieces, a base64 round-trip, each verified. **Do not count this arm as a
+  control.**
 - **Detection is pattern-based.** No entropy rule (measured, not assumed: at a false-positive-free
   threshold the miss rate is 100% below 22 characters). Encoded forms pass. A homoglyph defeats
   every rule in this package.
@@ -108,11 +114,14 @@ switch a pass on. Any downgrade makes the whole file invalid.
 ```sh
 dsh-dlp report                       # everything in the audit sink
 dsh-dlp report --since 24h
-dsh-dlp report --kind guard-deny
+dsh-dlp report --session <id>
+dsh-dlp report --would-have          # everything except the denials
 ```
 
-Every record carries a rule id, rule version, span offsets and a keyed hash — never the matched
-value.
+A redaction or denial record carries a rule id, rule version, span offsets and a keyed hash —
+never the matched value. An ask carries its rule id, a rewritten call the names of the fields
+that changed, and a neutralised remote image the destination hostname in the clear; none of
+those has a matched region to hash.
 
 [Audit record format →](https://charlotten7.github.io/dsh-dlp/audit.html)
 

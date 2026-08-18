@@ -11,7 +11,8 @@ nav_order: 4
 directories (but not `.env.example`), anything under `.ssh/`,
 `id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa` and their backups, `~/.aws/` and `~/.azure/`,
 `$DSH_HOME/.credentials.yaml`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`,
-`~/.config/gh/`, `~/.kube/` and `kubeconfig*`, `/etc/kubernetes/*.conf`,
+`~/.config/gh/`, everything under `~/.kube/` — the cached exec-plugin tokens sit a directory
+deeper than the config file — and `kubeconfig*`, `/etc/kubernetes/*.conf`,
 `~/.docker/config.json` and `.dockercfg`, gcloud credential files, `rclone.conf`, `.pgpass`,
 `.my.cnf`, `*service-account*.json`, `*.pem`/`*.p12`/`*.pfx`/`*.jks`/`*.keystore`/`*.key`/
 `*.asc`/`*.gpg`, and any file whose name ends in a delimited `credential(s)`, `secret(s)` or
@@ -74,8 +75,15 @@ this build has never heard of — is treated as egress-capable. Unknown defaults
 
 What this arm actually catches is a whole, unencoded secret of `high` severity or above sitting
 in one argument string. `A=ghp_firsthalf; B=…; curl -H "Bearer $A$B"`, a base64 round-trip, and
-`$(cat ~/.token)` all defeat it; a `password=` assignment is `medium` and is redacted rather
-than denied. Treat it as a guard against accident, not against an adversary.
+`$(cat ~/.token)` all defeat **this** arm, because none of them puts a secret in the argument;
+a `password=` assignment is `medium` and is redacted rather than denied. Treat it as a guard
+against accident, not against an adversary.
+
+`$(cat ~/.token)` is the one to read carefully, because the floor has two arms and only the
+secret arm misses it: the credential-path arm above tests every token of the same command line
+and denies `~/.token` on `dsh-dlp/path-credential-name`. What defeats *both* arms is a
+credential file whose name says nothing — `curl -H "Bearer $(cat ~/.config/acme/session)"`
+runs, verified — or any of the spellings listed under the shell arm's limits.
 
 A denial reads like this, and reaches the model as the tool's error result. It names the rule
 and a keyed hash, never the path — a path is itself sensitive, and this string is written to
@@ -105,7 +113,7 @@ A write to one of these **asks the user first**:
 | Rule | Paths |
 |---|---|
 | `config-agent-settings` | `.claude/settings*.json`, and the same under `.gemini/`, `.codex/`, `.cursor/`, `.windsurf/`, `.continue/` |
-| `config-agent-hooks` | `.claude/hooks/**` and the same under the other agent directories |
+| `config-agent-hooks` | `.claude/hooks/**`, and the same under `.gemini/`, `.codex/`, `.cursor/`, `.windsurf/`, `.continue/` |
 | `config-agent-instructions` | `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules` |
 | `config-agent-rules` | `.claude/rules/**`, `.cursor/rules/**`, `.windsurf/rules/**`, `.continue/rules/**` |
 | `config-copilot-instructions` | `.github/copilot-instructions.md`, `.github/instructions/**` |
@@ -184,9 +192,12 @@ that call, on a call whose paths and arguments are otherwise unremarkable.
 | `approval-mode-auto` | `approval_mode`, `approval_policy` or `approval_setting` set to `auto`, `never`, `none`, `bypass`, `full-auto` or `yolo` |
 | `approval-apply-pending` | `apply` true **and** `approvalPolicy: pending` on the same object |
 
-Keys are matched with `_`, `-` and `.` removed and case folded, so `non_interactive`,
-`nonInteractive` and `non-interactive` are one name, at any depth of the arguments. A tool that
-can only look is left alone: it has nothing to confirm. `approvalSuppressionAsk: false` turns
+Keys **and string values** are matched with `_`, `-` and `.` removed and case folded, so
+`non_interactive`, `nonInteractive` and `non-interactive` are one name, and `full-auto` — the
+spelling Codex writes — `full_auto` and `fullAuto` are one value, at any depth of the
+arguments. A mode that keeps the prompt is spelled the other way round, so `on-demand` and
+`ask-every-time` are outside the table under the same fold. A tool that can only look is left
+alone: it has nothing to confirm. `approvalSuppressionAsk: false` turns
 this half of the tier off.
 
 **This is `ask` for the same reason the write side is, and the reasoning is worth stating.**

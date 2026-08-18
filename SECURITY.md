@@ -4,12 +4,12 @@
 
 | Version | Supported |
 |---|---|
-| 0.3.x | yes |
-| < 0.3 | no |
+| 0.5.x | yes |
+| < 0.5 | no |
 
-Only the latest published `0.3.x` receives fixes. There is no long-term-support branch while
+Only the latest published `0.5.x` receives fixes. There is no long-term-support branch while
 the package is pre-1.0: each minor supersedes the one before it, and a fix ships as the next
-`0.3.x` patch or, if the minor has already moved on, as the next minor.
+`0.5.x` patch or, if the minor has already moved on, as the next minor.
 
 ## Reporting a vulnerability
 
@@ -32,8 +32,10 @@ This plugin is **not a containment boundary**. It runs in-process at the agent's
 anything the agent can execute can read the same files the guard denies. The following are
 documented limits, not vulnerabilities — they are described in README.md:
 
-- shell-command obfuscation defeating the `bash` path arm (globbing, quoting, substitution, a
-  different binary);
+- shell-command obfuscation defeating the `bash` path arm — anything that stops the path being
+  spelled in the command line: globbing, quote-splitting, `find -exec`, assembling the path
+  from pieces, a base64 round-trip. A command that spells the path is caught whatever program
+  it runs, so that is a gap worth reporting;
 - encoded or split secrets passing both detection tiers;
 - a secret with no recognisable structure going undetected;
 - a secret reaching the provider because it was already in the conversation.
