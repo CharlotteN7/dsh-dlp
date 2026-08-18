@@ -68,6 +68,20 @@ describe('which calls the ask tier examines', () => {
       .toBe('dsh-dlp/config-agent-rules')
   })
 
+  // `.cursor` was the one agent directory the hooks rule left out, while the
+  // sibling settings rule already covered it.
+  it.each([
+    '/srv/repo/.claude/hooks/session-start.sh',
+    '/srv/repo/.gemini/hooks/session-start.sh',
+    '/srv/repo/.codex/hooks/session-start.sh',
+    '/srv/repo/.cursor/hooks/session-start.sh',
+    '/srv/repo/.windsurf/hooks/session-start.sh',
+    '/srv/repo/.continue/hooks/session-start.sh',
+  ])('asks before a write to %s', (file_path) => {
+    expect(evaluateConfigWrite({ name: 'write', arguments: { file_path } })?.rule.id)
+      .toBe('dsh-dlp/config-agent-hooks')
+  })
+
   it('asks before a prompt template nested under the prompts directory', () => {
     expect(evaluateConfigWrite({ name: 'write', arguments: { file_path: '/srv/repo/.prompts/team/review.prompttemplate' } })
       ?.rule.id).toBe('dsh-dlp/config-prompt-template')

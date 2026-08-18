@@ -71,9 +71,11 @@ export const CONFIG_WRITE_RULES: readonly ConfigWriteRule[] = [
   },
   {
     id: 'dsh-dlp/config-agent-hooks',
-    version: 1,
+    version: 2,
     match: 'path',
-    pattern: /(^|\/)\.(claude|gemini|codex|windsurf|continue)\/hooks(\/|$)/i,
+    // `.cursor` is in the sibling settings rule above and was missing here,
+    // which left one of the six agent directories' hooks unguarded.
+    pattern: /(^|\/)\.(claude|gemini|codex|cursor|windsurf|continue)\/hooks(\/|$)/i,
     effect: 'an agent hook, which runs on a session event without the model asking for it',
   },
   // Copilot reads these without any agent asking it to: VS Code documents
