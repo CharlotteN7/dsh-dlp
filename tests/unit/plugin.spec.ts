@@ -37,6 +37,8 @@ interface StubContext {
   readonly ctx: Context
   readonly guards: Guard[]
   readonly listeners: Map<string, ((...args: never[]) => unknown)[]>
+  /** The same registrations in the shape `EventsService._hooks` publishes them. */
+  readonly hooks: Record<string, ((...args: never[]) => unknown)[]>
   readonly errors: string[]
   /** Lines the plugin reported as notices rather than faults. */
   readonly notices: string[]
@@ -51,6 +53,7 @@ interface StubContext {
 function stubContext(): StubContext {
   const guards: Guard[] = []
   const listeners = new Map<string, ((...args: never[]) => unknown)[]>()
+  const hooks: Record<string, ((...args: never[]) => unknown)[]> = {}
   const errors: string[] = []
   const notices: string[] = []
   const options = new Map<string, (Record<string, unknown> | undefined)[]>()
@@ -65,8 +68,10 @@ function stubContext(): StubContext {
       const existing = listeners.get(name) ?? []
       existing.push(listener)
       listeners.set(name, existing)
+      ;(hooks[name] ??= []).push(listener)
       return () => {}
     },
+    events: { _hooks: hooks },
     effect(setup: () => unknown) {
       setup()
     },
@@ -84,7 +89,7 @@ function stubContext(): StubContext {
       warn: (message: string) => { notices.push(message) },
     },
   } as unknown as Context
-  return { ctx, guards, listeners, errors, notices, options, definitions, services }
+  return { ctx, guards, listeners, hooks, errors, notices, options, definitions, services }
 }
 
 /**
@@ -317,8 +322,35 @@ describe('the breadth tier registration', () => {
 })
 
 describe('the ask tier', () => {
-  /** An approval service, which the registry needs before an `ask` can be granted. */
-  const approval = { services: { approval: {} } }
+  /**
+   * Compose one listener on the answerer waterfall, in the shape
+   * `EventsService._hooks` publishes it. Registered directly rather than
+   * through `ctx.on`, because `approval/request` is declared by a package this
+   * one deliberately does not depend on for a diagnostic read.
+   */
+  function composeAnswerer(plugin: StubContext): void {
+    (plugin.hooks['approval/request'] ??= []).push(() => 'allowed-once')
+  }
+
+  /** A session, which the tier reads the approval-policy override from. */
+  const session = (): Session => ({ id: 'session-1', events: [] } as unknown as Session)
+
+  /** An approval service with a configured default policy and a session override. */
+  function approvalService(policy: unknown, override?: unknown): Record<string, unknown> {
+    return { config: { policy }, overrideOf: () => override }
+  }
+
+  /**
+   * A mount an ask can actually reach a human through: an approval service
+   * whose policy is `ask`, plus one listener composed on the answerer
+   * waterfall. Both halves matter — the registry denies an ask with no
+   * service, and the service fails one closed with no answerer.
+   */
+  function mountReachable(overrides: Partial<Config> = {}): ReturnType<typeof mount> {
+    const plugin = mount(overrides, { approval: approvalService('ask') })
+    composeAnswerer(plugin)
+    return plugin
+  }
 
   /** The ask tier's listener, registered between the snapshot and the breadth tier. */
   function askListener(plugin: StubContext): (
@@ -349,7 +381,7 @@ describe('the ask tier', () => {
       'dsh-dlp/config-api-base-url',
     ],
   ])('asks before a write of %s, and records the rule', async (_label, args, ruleId) => {
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
 
     const decision = await askListener(plugin)(execution('write', args), async () => ({ kind: 'allow' }))
 
@@ -360,7 +392,7 @@ describe('the ask tier', () => {
   it('asks about a file that does not exist yet, which is the whole technique', async () => {
     // CVE-2026-25725 worked because the path was absent and therefore writable
     // with nothing to prompt about.
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
     const absent = join(home, 'no-such-repo', '.claude', 'settings.json')
 
     expect(await askListener(plugin)(execution('write', { file_path: absent }), async () => ({ kind: 'allow' })))
@@ -368,7 +400,7 @@ describe('the ask tier', () => {
   })
 
   it('names the rule and what the file does, never the path', async () => {
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
 
     const decision = await askListener(plugin)(
       execution('write', { file_path: '/srv/tenants/acme-corp-prod/CLAUDE.md' }),
@@ -384,7 +416,7 @@ describe('the ask tier', () => {
     ['a read of a workflow, which a read-only tool cannot change', 'read', { file_path: '/srv/repo/.github/workflows/ci.yml' }],
     ['a shell command that only mentions one', 'bash', { command: 'cat /srv/repo/.github/workflows/ci.yml' }],
   ])('leaves %s alone', async (_label, tool, args) => {
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
     const allow: PreToolDecision = { kind: 'allow' }
 
     expect(await askListener(plugin)(execution(tool, args), async () => allow)).toBe(allow)
@@ -392,7 +424,7 @@ describe('the ask tier', () => {
   })
 
   it('never widens a decision the waterfall already narrowed', async () => {
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
     const deny: PreToolDecision = { kind: 'deny', reason: 'someone else said no' }
 
     expect(await askListener(plugin)(
@@ -405,7 +437,7 @@ describe('the ask tier', () => {
     // Any non-allow decision from this waterfall skips guards entirely, so an
     // ask over a call the floor denies would turn an unconditional denial into
     // a prompt the user can grant, and would file it as an ask.
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
     const allow: PreToolDecision = { kind: 'allow' }
     // The home copy of an agent settings file is on the floor; only the
     // repository-local copy is this tier's business.
@@ -428,7 +460,122 @@ describe('the ask tier', () => {
     expect(await askListener(plugin)(execution('write', { file_path: '/srv/repo/AGENTS.md' }), async () => allow))
       .toBe(allow)
     expect(plugin.notices.filter(line => line.includes('no approval service'))).toHaveLength(1)
-    expect(plugin.records()).toEqual([])
+    expect(plugin.records().map(record => record['kind']))
+      .toEqual(['pre-execute-ask-abstained', 'pre-execute-ask-abstained'])
+  })
+
+  it('abstains and says so when the policy in force resolves every ask without prompting', async () => {
+    // `DSH_PERMISSION_MODE=danger-full-access` gives the shipped approval row
+    // `policy: never`, and the service resolves an ask as `rejected` before any
+    // answerer sees it. Asking there is a hard denial nobody was shown, which
+    // is what this tier is documented not to be. An answerer is composed here
+    // to show the policy alone decides it.
+    const plugin = mount({}, { approval: approvalService('never') })
+    composeAnswerer(plugin)
+    const allow: PreToolDecision = { kind: 'allow' }
+    const exec = { ...execution('write', { file_path: '/srv/repo/CLAUDE.md' }), agent: { session: session() } }
+
+    expect(await askListener(plugin)(exec as ToolExecution, async () => allow)).toBe(allow)
+    expect(plugin.records()[0]).toMatchObject({
+      kind: 'pre-execute-ask-abstained',
+      tool: 'write',
+      ruleId: 'dsh-dlp/config-agent-instructions',
+      askUnreachable: 'policy-never',
+    })
+    expect(plugin.notices.filter(line => line.includes('the approval policy in force is "never"'))).toHaveLength(1)
+  })
+
+  it('abstains and says so when nothing is composed on the answerer waterfall', async () => {
+    // The state of a stock headless install in every permission mode but
+    // `danger-full-access`: the policy is `ask`, the waterfall falls through to
+    // the fail-closed `unavailable`, and the registry turns that into a denial.
+    const plugin = mount({}, { approval: approvalService('ask') })
+    const allow: PreToolDecision = { kind: 'allow' }
+    const exec = { ...execution('write', { file_path: '/srv/repo/CLAUDE.md' }), agent: { session: session() } }
+
+    expect(await askListener(plugin)(exec as ToolExecution, async () => allow)).toBe(allow)
+    expect(plugin.records()[0]).toMatchObject({
+      kind: 'pre-execute-ask-abstained',
+      askUnreachable: 'no-answerer',
+    })
+    expect(plugin.notices.filter(line => line.includes('approval/request waterfall'))).toHaveLength(1)
+  })
+
+  it('reads the policy per session and per call, not once at mount', async () => {
+    // `overrideOf` folds one session's own `approval/policy` events, and a
+    // session switches policy mid-run. A mount-time answer would apply one
+    // session's policy to every other session on the same install.
+    const switched = session()
+    const plugin = mount({}, {
+      approval: { config: { policy: 'ask' }, overrideOf: (given: unknown) => given === switched ? 'never' : undefined },
+    })
+    composeAnswerer(plugin)
+    const allow: PreToolDecision = { kind: 'allow' }
+    const write = { file_path: '/srv/repo/CLAUDE.md' }
+
+    const asked = await askListener(plugin)(
+      { ...execution('write', write), agent: { session: session() } } as ToolExecution,
+      async () => allow,
+    )
+    const abstained = await askListener(plugin)(
+      { ...execution('write', write), agent: { session: switched } } as ToolExecution,
+      async () => allow,
+    )
+
+    expect(asked).toMatchObject({ kind: 'ask' })
+    expect(abstained).toBe(allow)
+    expect(plugin.records().map(record => record['kind'])).toEqual(['pre-execute-ask', 'pre-execute-ask-abstained'])
+  })
+
+  it('reports each state once, and each state separately', async () => {
+    // Latched per state rather than once overall: the three have different
+    // fixes, and a session that switches policy moves between them.
+    const switched = session()
+    const plugin = mount({}, {
+      approval: { config: { policy: 'ask' }, overrideOf: (given: unknown) => given === switched ? 'never' : undefined },
+    })
+    const allow: PreToolDecision = { kind: 'allow' }
+    const write = { file_path: '/srv/repo/CLAUDE.md' }
+    const call = async (on: Session): Promise<unknown> => askListener(plugin)(
+      { ...execution('write', write), agent: { session: on } } as ToolExecution,
+      async () => allow,
+    )
+
+    await call(switched)
+    await call(switched)
+    await call(session())
+    await call(session())
+
+    expect(plugin.notices.filter(line => line.includes('the ask tier'))).toHaveLength(2)
+    expect(plugin.records().map(record => record['askUnreachable']))
+      .toEqual(['policy-never', 'policy-never', 'no-answerer', 'no-answerer'])
+  })
+
+  it.each([
+    ['a service whose policy fields are not the ones read here', {}],
+    ['a service whose override fold throws', { config: { policy: 'ask' }, overrideOf: () => { throw new Error('boom') } }],
+  ])('keeps asking against %s', async (_label, service) => {
+    // Abstaining removes a prompt, so anything short of a positive reading of
+    // one of the three states keeps the ask.
+    const plugin = mount({}, { approval: service })
+    composeAnswerer(plugin)
+    const exec = { ...execution('write', { file_path: '/srv/repo/CLAUDE.md' }), agent: { session: session() } }
+
+    expect(await askListener(plugin)(exec as ToolExecution, async () => ({ kind: 'allow' })))
+      .toMatchObject({ kind: 'ask' })
+    expect(plugin.records().map(record => record['kind'])).toEqual(['pre-execute-ask'])
+  })
+
+  it('keeps asking about a call with no agent, whose session policy cannot be read', async () => {
+    // Without a session there is no override to fold, and the configured
+    // default alone cannot tell a session that never switched from one that
+    // switched to `ask`.
+    const plugin = mountReachable()
+
+    expect(await askListener(plugin)(
+      execution('write', { file_path: '/srv/repo/CLAUDE.md' }),
+      async () => ({ kind: 'allow' }),
+    )).toMatchObject({ kind: 'ask' })
   })
 
   it('is absent only when both of its rule classes are turned off', () => {
@@ -443,7 +590,7 @@ describe('the ask tier', () => {
     ['an approval mode that approves for the model', { approval_mode: 'auto' }, 'dsh-dlp/approval-mode-auto'],
     ['an apply whose approval is still pending', { apply: true, approvalPolicy: 'pending' }, 'dsh-dlp/approval-apply-pending'],
   ])('asks before a call carrying %s, and records the rule', async (_label, args, ruleId) => {
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
 
     const decision = await askListener(plugin)(execution('mcp__acme__deploy', args), async () => ({ kind: 'allow' }))
 
@@ -452,7 +599,7 @@ describe('the ask tier', () => {
   })
 
   it('reports the argument ahead of the file, because it describes the call itself', async () => {
-    const plugin = mount({}, approval.services)
+    const plugin = mountReachable()
 
     const decision = await askListener(plugin)(
       execution('write', { file_path: '/srv/repo/CLAUDE.md', non_interactive: true }),
@@ -466,7 +613,7 @@ describe('the ask tier', () => {
     ['the write half', { configWriteAsk: false }, { non_interactive: true }, 'dsh-dlp/approval-non-interactive'],
     ['the argument half', { approvalSuppressionAsk: false }, { file_path: '/srv/repo/CLAUDE.md' }, 'dsh-dlp/config-agent-instructions'],
   ])('keeps asking about the other class when a deployment turns off %s', async (_label, config, args, ruleId) => {
-    const plugin = mount(config, approval.services)
+    const plugin = mountReachable(config)
 
     const decision = await askListener(plugin)(execution('write', args), async () => ({ kind: 'allow' }))
 
@@ -478,7 +625,7 @@ describe('the ask tier', () => {
     ['a write the argument half would not see', { configWriteAsk: false }, { file_path: '/srv/repo/CLAUDE.md' }],
     ['an argument the write half would not see', { approvalSuppressionAsk: false }, { non_interactive: true }],
   ])('leaves %s alone', async (_label, config, args) => {
-    const plugin = mount(config, approval.services)
+    const plugin = mountReachable(config)
     const allow: PreToolDecision = { kind: 'allow' }
 
     expect(await askListener(plugin)(execution('write', args), async () => allow)).toBe(allow)

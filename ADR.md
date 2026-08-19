@@ -625,13 +625,10 @@ listener sees what the rest of the chain settled on, so the tier that can only a
 outermost; the other way round, a call that both writes a hook and carries a token would be
 asked about instead of denied.
 
-**With no approval service, it abstains.** The registry resolves an `ask` through
-`ctx.get('approval')` and keeps the historical degrade to *deny* when nothing is composed. A tier
-whose whole justification is "these rules are too false-positive-prone to deny on" must not
-become a denial because a deployment has no UI, so it reports once and lets the call through.
-The check is at decision time rather than at mount, because by then the harness is running and
-an absent service is conclusive rather than a load order — the opposite of §17's problem, and
-the reason it needs no deferred evaluation.
+**Where the seam cannot prompt anyone, it abstains.** A tier whose whole justification is "these
+rules are too false-positive-prone to deny on" must not become a denial because a deployment has
+nobody to ask, so it reports once and lets the call through. There are three such states rather
+than the one this originally handled; §23 records them and what could and could not be read.
 
 **A call the floor will deny is left to the floor.** Any non-allow decision from this waterfall
 skips guards entirely (§1), so asking about a call the guard would deny replaces an
@@ -823,3 +820,93 @@ six-character checksum; its near miss is the same token at 39. The fixture for S
 shape the announcement discussion shows — a 22-character base64url body, a separator and a
 checksum. A rule tested against a fixture shorter than the real credential reports a broken rule
 that is fine, which has cost this package a day before.
+
+## 23. The `ask` tier abstains in all three states where the seam prompts nobody
+
+§18 recorded one such state — no approval service composed — and the tier asked in the other
+two. Both reproduce end to end on a stock `dsh-base` + `dsh-headless` profile, and neither shows
+a human anything:
+
+| State | What the harness does | Reproduced as |
+|---|---|---|
+| No `ctx.approval` | `ToolRegistry.serviceAsk` keeps the historical degrade to `deny` | — |
+| Policy `never` | `ApprovalService.decide` returns `'rejected'` before dispatch | `Error: the user rejected tool "write"` under `DSH_PERMISSION_MODE=danger-full-access` |
+| No composed answerer | The waterfall falls through to the fail-closed `'unavailable'` | `Error: tool "write" requires approval, but no approval channel is available` under every other permission mode |
+
+The second is the shipped unattended posture: `bundle/base/cordis.patch.yml` sets the approval
+row's policy to `never` exactly when `DSH_PERMISSION_MODE` is `danger-full-access`. The third is
+the shipped default for everything else, because the only answerers upstream ships are the Host
+API proxy and the ACP bridge and `dsh-headless` mounts neither. So before this change the tier
+was a silent hard deny on **every** headless install, which is the outcome §18 says would get
+the plugin uninstalled, arriving through the seam rather than through the floor.
+
+**Abstaining requires a positive reading; anything else keeps the prompt.** Abstention removes a
+security prompt, so every unknown falls the other way. A call with no agent has no session to
+fold an override from, and the configured default alone cannot tell a session that never
+switched from one that switched to `ask` — so it asks. A service that publishes neither
+`overrideOf` nor `config`, or whose fold throws, tells us nothing — so it asks. A policy value
+this build does not recognise is not `'never'`, and the service dispatches on anything that is
+not `'never'` — so it asks. Only `'never'` read from the live service, or a composed-answerer
+count of exactly zero, abstains.
+
+**Policy is read through public API, not a private field.** `effectivePolicy` is private, but its
+two inputs are not: `overrideOf(session)` is the session's own `approval/policy` fold and
+`config.policy` the deployment default, and the service composes them as
+`overrideOf(session) ?? config.policy ?? 'ask'`. Reading the two and comparing to `'never'` is
+the same computation, made from members the class publishes. The override is checked first, in
+both directions, so a session that switched to `ask` under a `never` default still prompts and a
+session that switched to `never` under an `ask` default does not.
+
+**The answerer count is read off `EventsService._hooks`, which is published type surface.** This
+is where `dsh-netguard` §7's precedent applies, and the discipline lands better here than it did
+there: `_hooks: Record<keyof any, Hook[]>` is a *declared public field* of the exported
+`EventsService` class, not a `private` one, and `@deepseek-ai/cordis` is pinned to exactly
+`4.0.1` (§19). A Cordis that stopped publishing it would fail `typecheck` and `build` in this
+package rather than being misread at a user's install, so netguard's "say so rather than
+invent a verdict" lands at compile time instead of being guessed at run time.
+
+Zero answerers is a sound reading for a reason worth stating: `ApprovalService.decide` dispatches
+exactly one waterfall, `approval/request`, and a dispatch with no hooks reaches the fail-closed
+fallback. The count is taken before the scope filter that dispatch applies, so it over-counts an
+agent-scoped answerer belonging to another agent — and over-counting is the safe direction, since
+only zero abstains and zero cannot be filtered into some. `tests/unit/approval-reach.spec.ts`
+drives a real `Context` for every case, including composing an answerer on a child context and
+disposing it, so the reading is pinned against Cordis itself rather than against a stub.
+
+**Evaluated per decision, never at mount.** A session switches policy mid-run through
+`approval/policy`, the override is per session, and an answerer can be composed or disposed while
+the harness runs. A mount-time answer would apply one session's policy to every other session on
+the install and would cache a surface that has since unmounted.
+
+**The one state that cannot be read is an answerer that declines to claim.** Both shipped
+answerers call `next()` in some conditions — the ACP bridge does so for an agent it does not own,
+and for an ask with no `callId` — and the chain then reaches `'unavailable'` and denies. Deciding
+that would mean predicting what a listener returns, which is not readable from outside it. The
+tier keeps asking there, so the defect survives in that narrow case; `docs/index.md` says so.
+
+**An agent-less execution was left asking on purpose.** `serviceAsk` denies one outright — there
+is no session to audit to and no UI to route to — so it is a fourth instance of the same defect,
+and it is decidable from the execution this listener already holds. It is not changed here.
+Every model-driven call carries an agent; an agent-less execution comes from in-process code
+calling `ctx.tools.execute()` directly, which is not the path this tier defends, and widening the
+abstention to it would trade a real prompt for a case nobody reported.
+
+**An abstention gets its own audit kind, `pre-execute-ask-abstained`.** The alternative was a
+flag on `pre-execute-ask`. Rejected: `dsh-dlp report` tallies by kind and that is the operator's
+first look, so an ask that reached nobody must not be counted beside prompts that a human
+answered — the two mean opposite things about whether the call ran. The record carries the
+`ruleId` it would have asked about and `askUnreachable`, the state that stopped it, which is the
+field naming what an operator has to change. `RECORD_VERSION` stays `1`: a new `kind` value and a
+new optional field are additive, and every existing record is byte-identical, so bumping it would
+break readers keyed on `v` for no change they can see.
+
+**The notice is latched per state, not once overall.** §17's telemetry notice fires once because
+it reports a single fact. These three have different fixes and a session moves between them by
+switching policy, so a single latch would leave the first state reported standing for a different
+one afterwards. It goes to `process.stderr` as well as `ctx.logger` for §7's reason.
+
+**Rejected: taking `@deepseek-ai/dsh-user-approval` as a peer dependency** to type
+`ctx.get('approval')`. It would replace the runtime shape check with a compile-time one, but it
+adds a peer every consumer must install for a read this plugin makes opportunistically and can
+live without — the same reason `sessionTelemetry` and `approval` are already consumed through
+`ctx.get`.

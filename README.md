@@ -26,7 +26,9 @@ built as an out-of-repo plugin.
    credential.
 7. **Asks before a call switches off its own confirmation** — `non_interactive: true`,
    `approval_mode: auto`, an `apply` whose approval is still pending. Both `ask` tiers are
-   prompts rather than controls: they live at `tools/pre-execute` and can be neutralised.
+   prompts rather than controls: they live at `tools/pre-execute`, they can be neutralised, and
+   they abstain wherever the approval seam prompts nobody — which includes every install under
+   `DSH_PERMISSION_MODE=danger-full-access` and a stock headless install under any mode.
 8. **Writes an audit record for every decision.** A redaction or denial names the rule, its
    version, the offsets and a keyed hash; the three kinds with no matched region to describe —
    an ask, a rewritten call, a neutralised image — carry a rule id, the changed field names or

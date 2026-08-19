@@ -113,6 +113,13 @@ export interface AgentRunOptions {
   /** Extra rows appended to the profile's own patch layer. */
   readonly extraProfilePatch?: string
   /**
+   * Additional ESM plugin packages installed beside this one in the profile,
+   * keyed by package name and holding the whole module source. A row in
+   * `extraProfilePatch` is what actually mounts one; this only puts it where
+   * the profile's Node resolution finds it.
+   */
+  readonly extraPlugins?: Readonly<Record<string, string>>
+  /**
    * Environment overrides for the agent process. An `undefined` value removes
    * the variable, which is how a run opts back into a harness default the
    * harness itself turns off.
@@ -258,6 +265,19 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       }
     }
     copyRuntimeDependencies(installDir)
+
+    for (const [pluginName, source] of Object.entries(options.extraPlugins ?? {})) {
+      const pluginDir = join(profileDir, 'node_modules', pluginName)
+      mkdirSync(pluginDir, { recursive: true })
+      writeFileSync(join(pluginDir, 'package.json'), `${JSON.stringify({
+        name: pluginName,
+        version: '0.0.0',
+        private: true,
+        type: 'module',
+        main: 'index.js',
+      }, undefined, 2)}\n`)
+      writeFileSync(join(pluginDir, 'index.js'), source)
+    }
 
     for (const [relative, contents] of Object.entries(options.seedFiles ?? {})) {
       const file = join(workspace, relative)

@@ -164,17 +164,43 @@ guard would deny would replace an unconditional denial with a prompt a user can 
 also why `~/.claude/settings.json` and a repository's own `.claude/settings.json` behave
 differently: the first is on the floor, the second is a prompt.
 
-Two more limits worth stating:
+One more limit worth stating:
 
 - **A shell redirection is not covered.** Only path-typed arguments are tested, and unlike the
   floor the command line is not tokenised: a shell command cannot be told apart from a *read* of
   the same file, and prompting on `cat .github/workflows/ci.yml` is exactly the false positive
   that gets a tier switched off.
-- **With no approval service mounted, the tier abstains rather than denying.** The registry
-  resolves an `ask` through `ctx.get('approval')` and degrades to a *denial* when nothing is
-  composed — which would turn this tier into the silent hard deny it was designed not to be. It
-  reports once on `process.stderr` and `ctx.logger` and lets the call through. `configWriteAsk:
-  false` turns this half of the tier off entirely.
+
+### Where the tier abstains instead of asking
+
+**Where the approval seam can prompt nobody, the tier lets the call through rather than denying
+it.** There are three such states, and each one would otherwise turn an `ask` into a denial
+nobody was shown:
+
+| State | What the harness does with an ask |
+|---|---|
+| No approval service composed | The registry keeps its historical degrade to `deny` |
+| The approval policy in force is `never` | The service resolves `rejected` before any answerer sees it |
+| Nothing composed on `approval/request` | The waterfall falls through to the fail-closed `unavailable`, which the registry denies |
+
+In all three the tier allows the call, reports the state once on `process.stderr` and
+`ctx.logger` naming what to change, and writes a `pre-execute-ask-abstained` audit record
+carrying the rule it would have asked about and which state stopped it. The state is read on
+every decision rather than once at mount, because a session switches policy mid-run through
+`approval/policy`, the override is per session, and an answerer can be composed or disposed while
+the harness runs. Anything short of a positive reading of one of the three keeps the prompt: a
+call with no agent, a service whose fields are not the ones read, and an override fold that
+throws all still ask.
+
+**Under `DSH_PERMISSION_MODE=danger-full-access` this tier does not fire at all.** The shipped
+`dsh-base` bundle gives the approval row `policy: never` in that mode, which is the second state
+above. An operator who wants these writes stopped in that posture needs the guard floor or a
+different tool — this tier is a prompt, and under that mode there is nobody to prompt.
+
+**A stock `dsh-headless` install composes no answerer**, so in every other permission mode the
+third state applies and the tier abstains there too. An approval surface — the Host API proxy or
+the ACP bridge — is what makes the prompt appear. `configWriteAsk: false` turns this half of the
+tier off entirely.
 
 ---
 
@@ -207,7 +233,8 @@ is a guess about tools this build has never seen — and a guess does not belong
 denials cannot be overridden. An `ask` is also the *right* remedy rather than a compromise: the
 argument's whole purpose is to remove a prompt, and this tier puts one back.
 
-It shares the write side's costs: neutralizable at `tools/pre-execute`, abstaining when no
-approval service is mounted, and silent on a call the floor already denies.
+It shares the write side's costs: neutralizable at `tools/pre-execute`, abstaining wherever the
+approval seam cannot prompt anyone — including under `danger-full-access` and on a stock headless
+install — and silent on a call the floor already denies.
 
 ---

@@ -18,6 +18,7 @@
 import { appendFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { stripControlSequences } from './detectors.ts'
+import type { AskUnreachable } from './approval-reach.ts'
 import type { RedactedSpan } from './redaction.ts'
 
 declare const decisionIdBrand: unique symbol
@@ -41,6 +42,7 @@ export type AuditKind =
   | 'guard-deny'
   | 'pre-execute-deny'
   | 'pre-execute-ask'
+  | 'pre-execute-ask-abstained'
   | 'execution-mutation'
   | 'result-redaction'
   | 'telemetry-redaction'
@@ -84,6 +86,13 @@ export interface AuditRecord {
    * behaviour-changing file, not that any part of it matched a secret.
    */
   readonly ruleId?: string
+  /**
+   * Which state left the ask tier with nowhere to ask, for a
+   * `pre-execute-ask-abstained`. An abstention allowed a call the tier would
+   * otherwise have asked about, so the state that caused it is the field an
+   * operator needs to change to get the prompt back.
+   */
+  readonly askUnreachable?: AskUnreachable
   /** Telemetry record channel, for `telemetry-redaction`. */
   readonly channel?: string
   /** Fields another plugin rewrote after the call was logged, for `execution-mutation`. */

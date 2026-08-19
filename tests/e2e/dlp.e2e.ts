@@ -22,6 +22,40 @@ const PRIVATE_KEY = [
 /** A host that exists only in this fixture; nothing ever resolves or contacts it. */
 const EXFIL_HOST = 'exfil.invalid'
 
+/** Package name of the scripted approval answerer the ask-tier runs mount. */
+const ANSWERER = 'e2e-approval-answerer'
+
+/**
+ * A `SessionStart` hook of the shape the Miasma worm wrote, as the `write`
+ * call's content. Nothing runs it: the file lands in a throwaway workspace and
+ * the harness deletes it with the rest of the run.
+ */
+const SETTINGS_WITH_HOOK = `${JSON.stringify({
+  hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo e2e-hook-body' }] }] },
+})}\n`
+
+/** Arguments of the repo-local agent settings write both abstention runs make. */
+const SETTINGS_WRITE = JSON.stringify({
+  file_path: '{{WORKSPACE}}/.claude/settings.json',
+  content: SETTINGS_WITH_HOOK,
+})
+
+/** A profile patch row mounting one extra plugin by package name. */
+function mountRow(packageName: string): string {
+  return ['- insert:', `    - id: ${packageName}`, `      name: '${packageName}'`].join('\n')
+}
+
+/** An approval answerer that settles every request with one fixed outcome. */
+function answererSource(outcome: string): string {
+  return [
+    `export const name = ${JSON.stringify(ANSWERER)}`,
+    'export function apply(ctx) {',
+    `  ctx.on('approval/request', () => Promise.resolve(${JSON.stringify(outcome)}))`,
+    '}',
+    '',
+  ].join('\n')
+}
+
 /** Rows the agent persisted for completed tool calls. */
 function toolResults(log: readonly Record<string, unknown>[]): Record<string, unknown>[] {
   return log.filter(row => row['type'] === 'tool/result')
@@ -294,6 +328,108 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
     expect(neutralized.every(record => record['host'] === EXFIL_HOST && record['v'] === 1)).toBe(true)
     expect(String(neutralized[0]?.['sessionId']).length).toBeGreaterThan(0)
     expect(JSON.stringify(result.auditRecords)).not.toContain(payload)
+  }, 120_000)
+
+  it('lets a repo-local agent settings write through under danger-full-access, where an ask reaches nobody', async () => {
+    // The shipped dsh-base bundle gives the approval service `policy: never`
+    // under this permission mode, and the service resolves every ask as
+    // `rejected` before dispatching to any answerer. Returning `{ kind: 'ask' }`
+    // there came back to the model as `Error: the user rejected tool "write"`
+    // with no human involved: a tier documented as a prompt acting as an
+    // unoverridable denial.
+    const result = await runAgent({
+      task: 'add the session hook',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'write',
+      toolArguments: SETTINGS_WRITE,
+      successText: 'added',
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const results = JSON.stringify(toolResults(result.sessionLog))
+    expect(results).not.toContain('the user rejected tool')
+    expect(results).not.toContain('requires approval')
+    expect(results).toContain('.claude/settings.json')
+
+    // Abstaining is not silence: the sink carries the rule that would have
+    // been asked about and which state left it with nowhere to ask.
+    const abstentions = result.auditRecords.filter(record => record['kind'] === 'pre-execute-ask-abstained')
+    expect(abstentions).toHaveLength(1)
+    expect(abstentions[0]).toMatchObject({
+      v: 1,
+      tool: 'write',
+      ruleId: 'dsh-dlp/config-agent-settings',
+      askUnreachable: 'policy-never',
+    })
+    expect(String(abstentions[0]?.['sessionId']).length).toBeGreaterThan(0)
+    expect(result.auditRecords.filter(record => record['kind'] === 'pre-execute-ask')).toEqual([])
+
+    // Said once, on stderr, naming the state and what to change.
+    const notices = result.stderr.split('\n').filter(line => line.includes('the ask tier'))
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toContain('the approval policy in force is "never"')
+    expect(notices[0]).toContain('DSH_PERMISSION_MODE=danger-full-access')
+    expect(notices[0]).toContain('The guard floor is unaffected')
+  }, 120_000)
+
+  it('lets the same write through under workspace-write, where the shipped bundles compose no answerer', async () => {
+    // The other half of the same defect, and the state of a stock headless
+    // install in every permission mode but the one above: the policy is `ask`,
+    // nothing is composed on `approval/request`, the waterfall falls through
+    // to the fail-closed `unavailable`, and the registry denies. The model used
+    // to be told the tool "requires approval, but no approval channel is
+    // available" — again with nothing shown to anyone.
+    const result = await runAgent({
+      task: 'add the session hook',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'write',
+      toolArguments: SETTINGS_WRITE,
+      successText: 'added',
+      env: { DSH_PERMISSION_MODE: 'workspace-write' },
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const results = JSON.stringify(toolResults(result.sessionLog))
+    expect(results).not.toContain('no approval channel is available')
+    expect(results).toContain('.claude/settings.json')
+
+    const abstentions = result.auditRecords.filter(record => record['kind'] === 'pre-execute-ask-abstained')
+    expect(abstentions).toHaveLength(1)
+    expect(abstentions[0]).toMatchObject({
+      ruleId: 'dsh-dlp/config-agent-settings',
+      askUnreachable: 'no-answerer',
+    })
+    expect(result.stderr).toContain('nothing is composed on the approval/request waterfall')
+  }, 120_000)
+
+  it('still asks, and still stops the write, when an answerer is composed to say no', async () => {
+    // The abstention must not be the tier switching itself off. With a policy
+    // of `ask` and one answerer composed, the same call is asked about, the
+    // answer comes back `rejected`, and the write does not happen.
+    const result = await runAgent({
+      task: 'add the session hook',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'write',
+      toolArguments: SETTINGS_WRITE,
+      successText: 'refused',
+      env: { DSH_PERMISSION_MODE: 'workspace-write' },
+      extraPlugins: { [ANSWERER]: answererSource('rejected') },
+      extraProfilePatch: mountRow(ANSWERER),
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const results = JSON.stringify(toolResults(result.sessionLog))
+    expect(results).toContain('the user rejected tool')
+    expect(results).not.toContain('Created file')
+
+    // Filed as the prompt it was, not as an abstention, and the session log
+    // carries the harness's own audit pair for the question.
+    expect(result.auditRecords.filter(record => record['kind'] === 'pre-execute-ask-abstained')).toEqual([])
+    const asks = result.auditRecords.filter(record => record['kind'] === 'pre-execute-ask')
+    expect(asks).toHaveLength(1)
+    expect(asks[0]).toMatchObject({ tool: 'write', ruleId: 'dsh-dlp/config-agent-settings' })
+    expect(result.sessionLog.filter(row => row['type'] === 'approval/asked')).toHaveLength(1)
+    expect(result.stderr).not.toContain('the ask tier')
   }, 120_000)
 
   it('tells the operator that its telemetry redactor cannot run under the shipped default', async () => {

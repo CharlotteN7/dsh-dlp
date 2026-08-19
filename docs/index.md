@@ -71,6 +71,16 @@ More limits worth stating up front:
   span grows outward to the nearest delimiter, which over-redacts in the safe direction, but a
   secret whose own text contains one of those delimiters is covered by two placeholders with the
   delimiter left between them.
+- **The `ask` tier is only a control where somebody can be asked.** It abstains — allowing the
+  call, reporting once and recording a `pre-execute-ask-abstained` — in each of the three states
+  where the approval seam prompts nobody: no approval service composed, an approval policy of
+  `never`, or nothing composed on the `approval/request` waterfall. That covers every install
+  under `DSH_PERMISSION_MODE=danger-full-access`, and a stock `dsh-headless` install under any
+  permission mode. The alternative is worse — a tier documented as a prompt acting as an
+  unoverridable denial on rules with a real false-positive rate — but it does mean this tier
+  stops nothing in an unattended posture. Use the guard floor for what must hold there. The one
+  state it cannot read is an answerer that is composed and declines to claim the request: that
+  still fails closed to a denial nobody saw.
 - **An approval-suppressing argument is recognised by name.** `non_interactive`,
   `approval_mode` and an `apply` beside a pending `approvalPolicy` are the three published
   shapes; a tool that skips its confirmation under some other argument name is not covered, and

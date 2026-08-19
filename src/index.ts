@@ -13,7 +13,7 @@
  *    config paths and for calls carrying an argument that switches their own
  *    confirmation off. Deliberately here rather than on the floor: its rules
  *    have a real false-positive rate and the floor cannot ask. Neutralizable,
- *    and it abstains entirely when no approval service is mounted.
+ *    and it abstains entirely wherever the approval seam cannot prompt anyone.
  * 3. `tools/post-execute` — result redaction, applied before the `tool/result`
  *    session event is appended, so the durable log records the redacted copy;
  *    a result that cannot be cleaned is withheld rather than accepted.
@@ -49,6 +49,7 @@ import { neutralizeImageStream } from './images.ts'
 import { ExecutionSnapshots, mutationReason } from './mutation.ts'
 import { evaluateConfigWrite } from './config-writes.ts'
 import { evaluateApprovalSuppression } from './approvals.ts'
+import { approvalSeamNotice, askReach, type AskUnreachable } from './approval-reach.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
 import { redactRecord, telemetrySeamNotice } from './telemetry.ts'
 import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from './sink.ts'
@@ -253,24 +254,19 @@ export function apply(ctx: Context, config: Config): void {
   }), 'dsh-dlp guard floor')
 
   /**
-   * Report once that the `ask` tier has nowhere to ask.
+   * Report once per state that the `ask` tier has nowhere to ask.
    *
-   * The registry resolves an `ask` through `ctx.get('approval')` and keeps the
-   * historical degrade to *deny* when no service is composed. This tier exists
-   * because its rules are too false-positive-prone for a deny, so under a
-   * deployment with no approval channel it abstains instead of becoming the
-   * silent hard deny it was designed not to be. Evaluated at decision time
-   * rather than at mount, because by then the harness is running and an absent
-   * service is conclusive rather than a load order.
+   * Latched per state rather than once overall: the three states have
+   * different fixes, a session can move between them mid-run by switching its
+   * approval policy, and a single latch would leave the first one reported
+   * standing for a different one afterwards. `approval-reach.ts` records why
+   * each is a state in which an ask reaches nobody.
    */
-  let approvalSeamReported = false
-  const discloseApprovalSeam = (): void => {
-    if (approvalSeamReported) return
-    approvalSeamReported = true
-    notice(ctx, 'dsh-dlp: the ask tier (configWriteAsk, approvalSuppressionAsk) is enabled, but no approval service'
-      + ' is mounted, so an ask would degrade to a denial. This tier abstains instead: a write to a'
-      + ' behaviour-changing config path, and a call that switches its own confirmation off, are allowed through'
-      + ' with no prompt. The guard floor is unaffected.')
+  const approvalSeamReported = new Set<AskUnreachable>()
+  const discloseApprovalSeam = (cause: AskUnreachable): void => {
+    if (approvalSeamReported.has(cause)) return
+    approvalSeamReported.add(cause)
+    notice(ctx, approvalSeamNotice(cause))
   }
 
   if (policy.configWriteAsk || policy.approvalSuppressionAsk) {
@@ -292,8 +288,25 @@ export function apply(ctx: Context, config: Config): void {
       // would replace an unconditional denial with a prompt a user can grant,
       // and would file the decision as an ask rather than as a guard denial.
       if (safeEvaluateGuard(exec, policy, hasher) !== undefined) return decision
-      if (ctx.get('approval') === undefined) {
-        discloseApprovalSeam()
+      // Asked at decision time, never at mount: the session's policy is a fold
+      // over its own log and can change mid-run, and an answerer can be
+      // composed or disposed while the harness runs.
+      const reach = askReach(ctx, exec.agent?.session)
+      if (reach.kind === 'unreachable') {
+        discloseApprovalSeam(reach.cause)
+        // An abstention allowed a call this tier would have asked about, so it
+        // is recorded rather than left silent. Its own kind, not a flag on
+        // `pre-execute-ask`: `dsh-dlp report` counts by kind, and an ask that
+        // reached nobody must not be counted as a prompt that happened.
+        sink.write({
+          v: RECORD_VERSION,
+          time: new Date().toISOString(),
+          kind: 'pre-execute-ask-abstained',
+          decisionId: newDecisionId(),
+          ...identity(exec),
+          ruleId: finding.rule.id,
+          askUnreachable: reach.cause,
+        })
         return decision
       }
       sink.write({
