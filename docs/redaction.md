@@ -262,14 +262,12 @@ Lowering the threshold to buy a shorter floor stops being free immediately:
 | 4.20 | 19 | 5.25% / 0.75% | 16.13% / 12.76% |
 | 4.00 | 16 | 16.09% / 8.67% | 38.07% / 35.56% |
 
-So the 22-character floor an earlier revision of these docs claimed as false-positive-free costs
-4.46 bits per character, where roughly one file in 25 already carries a spurious match; and a
-16-character floor — the shortest that reaches most token formats — puts a spurious match in
-better than a third of them.
+A 22-character floor costs 4.46 bits per character, where roughly one file in 25 already carries
+a spurious match. A 16-character floor — the shortest that reaches most token formats — puts one
+in better than a third of them.
 
-The conclusion the earlier figure was reaching for holds, and holds harder than it said: an
-entropy rule that is safe to ship catches only strings longer than every format this package
-cares about, and one short enough to catch them is not safe to ship. It would add false positives
-without adding a single detection the prefix rules do not already make.
+That is the whole case: an entropy rule cheap enough in false positives to ship catches only
+strings longer than every format this package cares about, and one short enough to catch them is
+not cheap enough to ship. Either way it adds no detection the prefix rules do not already make.
 
 ---

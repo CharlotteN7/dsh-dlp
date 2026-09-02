@@ -29,9 +29,9 @@ More limits worth stating up front:
   having its own replaced afterwards. What that does *not* close: `prepend` unshifts, so a
   listener registered **after** this plugin with the same option lands ahead of it and gets the
   last word back. Profile entries also mount concurrently, so list position does not by itself
-  decide who registers first. Both halves are exercised end to end — one run where a listener
-  registered ahead of this plugin can no longer restore the raw value, and one where a
-  later-registering `prepend` listener still can.
+  decide who registers first. Both halves are exercised end to end: one run where a listener
+  registered ahead of this plugin cannot restore the raw value, and one where a later-registering
+  `prepend` listener can.
 - **The shell-command arm is advisory pattern-matching.** A `bash` command line is tested
   whole, and then split on shell-ish separators with each token tested as a path. What that
   covers is any command *spelling* a credential path, whatever program would open it:
@@ -72,9 +72,9 @@ More limits worth stating up front:
   bounded by log₂L for a string of length L, so a threshold of *t* bits per character can never
   flag anything shorter than 2^*t*. At the lowest threshold that produces **no** false positives
   on ordinary tool output, that floor measures **64–66 characters** — so such a rule misses every
-  credential shorter than that, which is nearly all of them. Buying the 22-character floor the
-  earlier figure named means dropping to 4.46 bits per character, which is not false-positive-free
-  at all. [The measurement, its corpus and its method →](redaction.md#why-there-is-no-entropy-rule)
+  credential shorter than that, which is nearly all of them. A floor of 22 characters costs 4.46
+  bits per character, and at that threshold a spurious match lands in roughly one file in 25.
+  [The measurement, its corpus and its method →](redaction.md#why-there-is-no-entropy-rule)
 - **A secret containing a delimiter can still be split across two redactions.** Every reported
   span grows outward to the nearest delimiter, which over-redacts in the safe direction, but a
   secret whose own text contains one of those delimiters is covered by two placeholders with the
