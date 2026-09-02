@@ -89,8 +89,12 @@ dsh-dlp report --would-have         # everything except the denials
 dsh-dlp report --log /var/log/dsh-dlp.audit.jsonl
 ```
 
-It prints counts by decision, by rule, by tool and by invisible-character class, then the ten
-most recent decisions. `--would-have` drops exactly the three kinds that stopped a call —
+It prints counts by decision, by rule, by tool, by invisible-character class and by the state
+that left an ask with nobody to prompt, then the ten most recent decisions. That last count is
+the one an operator is most often looking for: an abstention is the outcome where a documented
+prompt did not happen and the call ran anyway, and the state it names —
+`no-service`, `policy-never` or `no-answerer` — is what has to change to get the prompt back.
+It also rides the `most recent` line for each abstention, as `no prompt: <state>`. `--would-have` drops exactly the three kinds that stopped a call —
 `guard-deny`, `pre-execute-deny` and `execution-mutation` — and keeps everything else: the
 redactions and invisible-character findings, which are calls that ran with their results
 rewritten, and also the `pre-execute-ask`, `pre-execute-ask-abstained` and

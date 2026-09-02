@@ -64,6 +64,35 @@ describe('dsh-dlp report', () => {
     expect(printed).not.toContain('PRIVATE-KEY-BODY')
   }, 120_000)
 
+  it('names the state that left an ask with nobody to prompt', async () => {
+    // The abstention is the state an operator most needs to see: a documented
+    // prompt did not happen and the call ran. The sink recorded which state
+    // caused it from the first release; nothing printed it.
+    const result = await runAgent({
+      task: 'add the session hook',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'write',
+      toolArguments: JSON.stringify({
+        file_path: '{{WORKSPACE}}/.claude/settings.json',
+        content: `${JSON.stringify({
+          hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'echo e2e-hook-body' }] }] },
+        })}\n`,
+      }),
+      successText: 'added',
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const auditLog = join(scratch, 'abstained.audit.jsonl')
+    writeFileSync(auditLog, result.auditLogText)
+
+    const printed = report(['report', '--log', auditLog]).stdout
+
+    expect(printed).toContain('pre-execute-ask-abstained')
+    expect(printed).toContain('asks that reached nobody')
+    expect(printed).toContain('policy-never')
+    expect(printed).toContain('no prompt: policy-never')
+  }, 120_000)
+
   it('says where it looked when there is no audit file', () => {
     const result = report(['report', '--log', '/nonexistent/dsh-dlp.audit.jsonl'])
 

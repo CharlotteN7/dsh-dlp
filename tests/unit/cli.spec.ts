@@ -136,6 +136,18 @@ describe('reading one audit line', () => {
   ])('reads no counts from %s', (_label, extra) => {
     expect(parseRecord(line({ time: '2026-08-15T10:00:00.000Z', kind: 'guard-deny', ...extra }))?.unicode).toEqual({})
   })
+
+  it('reads the state that left an abstained ask with nowhere to ask', () => {
+    const record = parseRecord(line({
+      time: '2026-08-15T10:00:00.000Z',
+      kind: 'pre-execute-ask-abstained',
+      tool: 'write',
+      ruleId: 'dsh-dlp/config-agent-settings',
+      askUnreachable: 'policy-never',
+    }))
+
+    expect(record?.askUnreachable).toBe('policy-never')
+  })
 })
 
 describe('reading --since', () => {
@@ -280,6 +292,30 @@ describe('the report', () => {
   it('stops after the header when nothing is left', () => {
     expect(formatReport(records, 0, { log: '/tmp/a.jsonl', session: 'session-z', wouldHave: false }))
       .toEqual(['dsh-dlp: 0 decision(s) in /tmp/a.jsonl', '  session session-z'])
+  })
+
+  it('says which state left an ask with nobody to prompt, which no other kind records', () => {
+    // The abstention allowed a call the tier would have asked about, so the
+    // state that caused it is the field an operator has to change to get the
+    // prompt back — and nothing printed it.
+    const abstained = parseRecord(line({
+      time: '2026-08-16T11:45:00.000Z',
+      kind: 'pre-execute-ask-abstained',
+      tool: 'write',
+      ruleId: 'dsh-dlp/config-agent-settings',
+      askUnreachable: 'policy-never',
+    }))
+
+    const report = formatReport(abstained === undefined ? [] : [abstained], 0, {
+      log: '/tmp/a.jsonl',
+      wouldHave: false,
+    })
+
+    expect(report.join('\n')).toContain('asks that reached nobody')
+    expect(report.join('\n')).toContain('policy-never')
+    expect(report.at(-1)).toBe(
+      '  2026-08-16T11:45:00.000Z  pre-execute-ask-abstained  write  dsh-dlp/config-agent-settings  no prompt: policy-never',
+    )
   })
 
   it('shows a decision that named no rule and no tool', () => {

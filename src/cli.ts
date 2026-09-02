@@ -34,6 +34,12 @@ export interface ReportRecord {
   readonly ruleIds: readonly string[]
   /** Invisible-character runs by rule id. */
   readonly unicode: Readonly<Record<string, number>>
+  /**
+   * Which state left the ask tier with nowhere to ask, on the one kind that
+   * records it. The abstention allowed a call the tier would have asked
+   * about, so this is the field an operator changes to get the prompt back.
+   */
+  readonly askUnreachable?: string
 }
 
 /** Read one string field, or `undefined` when the line does not carry it. */
@@ -89,6 +95,7 @@ export function parseRecord(line: string): ReportRecord | undefined {
   if (Number.isNaN(time)) return undefined
   const tool = stringField(record, 'tool')
   const sessionId = stringField(record, 'sessionId')
+  const askUnreachable = stringField(record, 'askUnreachable')
   return {
     time,
     kind,
@@ -96,6 +103,7 @@ export function parseRecord(line: string): ReportRecord | undefined {
     ...sessionId === undefined ? {} : { sessionId },
     ruleIds: ruleIdsOf(record),
     unicode: unicodeOf(record),
+    ...askUnreachable === undefined ? {} : { askUnreachable },
   }
 }
 
@@ -310,13 +318,21 @@ export function formatReport(
       'results carrying invisible characters',
       tally(selected, record => Object.keys(record.unicode)),
     ),
+    // The state behind an abstention, which nothing else in the report shows.
+    // An abstention is the one outcome where a documented prompt did not
+    // happen and the call ran anyway, so the operator needs the state by name.
+    ...section(
+      'asks that reached nobody',
+      tally(selected, record => record.askUnreachable === undefined ? [] : [record.askUnreachable]),
+    ),
   )
 
   const recent = [...selected].sort((left, right) => right.time - left.time).slice(0, RECENT_LIMIT)
   lines.push('', `most recent ${recent.length}`)
   for (const record of recent) {
     const rules = record.ruleIds.length === 0 ? '-' : record.ruleIds.join(', ')
-    lines.push(`  ${new Date(record.time).toISOString()}  ${record.kind}  ${record.tool ?? '-'}  ${rules}`)
+    const abstention = record.askUnreachable === undefined ? '' : `  no prompt: ${record.askUnreachable}`
+    lines.push(`  ${new Date(record.time).toISOString()}  ${record.kind}  ${record.tool ?? '-'}  ${rules}${abstention}`)
   }
   return lines
 }
