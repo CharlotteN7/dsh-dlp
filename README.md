@@ -72,8 +72,10 @@ dsh plugin --profile <name> add dsh-dlp
 dsh --profile <name> --dump-config      # the dsh-dlp row should appear
 ```
 
-Any harness from `0.1.0-rc.6` onwards in the `0.1.x` line works: the peer ranges accept it and CI
-runs the end-to-end suite against every published rc in that range.
+Any harness from `0.1.0-rc.6` onwards in the `0.1.x` line works, prereleases included. CI drives
+the end-to-end suite against every published rc the peer ranges admit — `0.1.0-rc.6`, `rc.7`,
+`rc.8`, `0.1.1-rc.1`, `0.1.1-rc.2` — and typechecks and builds against the `0.1.2` prerelease
+line without running it end to end.
 
 Pin `@deepseek-ai/dsh-headless` explicitly — its npm `latest` tag still points at `0.0.1-rc.1`.
 The package ships a `cordis.patch.yml` bundle layer, so listing it in `dsh.profile.bundles` mounts

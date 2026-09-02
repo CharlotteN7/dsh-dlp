@@ -659,6 +659,9 @@ run over nothing else.
 
 ## 19. The harness peers are caret ranges; `@deepseek-ai/cordis` stays exact
 
+*Both halves are superseded by §26: the caret ranges refuse the prerelease line, and the exact
+Cordis pin refuses `4.0.2`. What follows is why each was chosen.*
+
 Every `@deepseek-ai/dsh-*` peer was pinned to the exact version `0.1.0-rc.6`. That made
 `npm install dsh-dlp` fail outright the moment upstream published `0.1.0-rc.7`:
 `@deepseek-ai/dsh-agent@0.1.0-rc.6` declares `@deepseek-ai/dsh-system-prompt@^0.1.0-rc.6`, which now
@@ -860,10 +863,10 @@ session that switched to `never` under an `ask` default does not.
 **The answerer count is read off `EventsService._hooks`, which is published type surface.** This
 is where `dsh-netguard` §7's precedent applies, and the discipline lands better here than it did
 there: `_hooks: Record<keyof any, Hook[]>` is a *declared public field* of the exported
-`EventsService` class, not a `private` one, and `@deepseek-ai/cordis` is pinned to exactly
-`4.0.1` (§19). A Cordis that stopped publishing it would fail `typecheck` and `build` in this
-package rather than being misread at a user's install, so netguard's "say so rather than
-invent a verdict" lands at compile time instead of being guessed at run time.
+`EventsService` class, and this package typechecks and builds against a Cordis its own peer range
+admits (§26). A Cordis that stopped publishing the field would fail `typecheck` and `build` here
+rather than being misread at a user's install, so netguard's "say so rather than invent a
+verdict" lands at compile time instead of being guessed at run time.
 
 Zero answerers is a sound reading for a reason worth stating: `ApprovalService.decide` dispatches
 exactly one waterfall, `approval/request`, and a dispatch with no hooks reaches the fail-closed
@@ -993,3 +996,62 @@ for the five lines it was meant to save.
 The cost is that upstream widening or narrowing the alias no longer reaches us. That drift is
 visible: the `alpha` CI job typechecks and builds this package against the `alpha` dist-tag, which
 is what would have caught the move itself.
+
+## 26. The peer ranges admit the prerelease line, and `@deepseek-ai/cordis` moves to a caret
+
+§19's caret ranges were right about finals and wrong about prereleases. node-semver admits a
+prerelease into a range only when some comparator carries a prerelease *and* shares its exact
+`major.minor.patch`, so `^0.1.0-rc.6` accepts `0.1.0-rc.8` and `0.1.1` and refuses `0.1.1-rc.2`,
+which is the current `next` dist-tag. Verified with the repo's own `semver@7.8.5`:
+
+| version | `^0.1.0-rc.6` | `>=0.1.0-rc.6 <0.2.0-0` | the range shipped |
+|---|---|---|---|
+| `0.1.0-rc.5` | no | no | no |
+| `0.1.0-rc.6` | yes | yes | yes |
+| `0.1.0-rc.7` | yes | yes | yes |
+| `0.1.0-rc.8` | yes | yes | yes |
+| `0.1.0` | yes | yes | yes |
+| `0.1.1-rc.1` | **no** | **no** | yes |
+| `0.1.1-rc.2` | **no** | **no** | yes |
+| `0.1.1` | yes | yes | yes |
+| `0.1.2-alpha.2` | **no** | **no** | yes |
+| `0.1.2-alpha.5` | **no** | **no** | yes |
+| `0.1.2` | yes | yes | yes |
+| `0.1.3` | yes | yes | yes |
+| `0.1.3-rc.1` | no | no | **no** |
+| `0.2.0-rc.1` | no | no | no |
+| `0.2.0` | no | no | no |
+| `1.0.0` | no | no | no |
+
+The range is `>=0.1.0-rc.6 <0.2.0-0 || >=0.1.1-0 <0.2.0-0 || >=0.1.2-0 <0.2.0-0`. The first branch
+sets the floor and the ceiling; the other two exist only because node-semver needs a
+prerelease-carrying comparator at each patch tuple whose prereleases are to be admitted.
+
+**What it cannot cover is a maintenance claim, not a fix.** The last row of the table is the
+honest one: `0.1.3-rc.1` is refused, and admitting it means adding a fourth branch. There is no
+form that admits an open-ended set of prereleases — `includePrerelease` is a caller option, not a
+range syntax — so the alternative to one branch per tuple is the range that already broke.
+Opening onto `0.2.x` is not that alternative: the guard floor reads seams whose types this
+package does not own, and a minor upstream bump is where they move.
+
+**`@deepseek-ai/cordis` moves to `^4.0.1`.** §19 pinned it exactly because "`4.0.1` is the only
+release upstream's own `^4.0.1` ranges resolve to, so the exact pin excludes nothing that exists".
+`4.0.2` shipped and the `0.1.2` line declares `^4.0.2`, so the premise expired and the pin now
+excludes something real: `npm install dsh-dlp@0.7.0` into a project on the alpha line fails with
+`ERESOLVE`, `Could not resolve dependency: peer @deepseek-ai/cordis@"4.0.1" from dsh-dlp@0.7.0`.
+The caret is the shape upstream uses between its own packages, which is §19's own criterion.
+
+§23's argument that reading `EventsService._hooks` is pinned by this package's own `typecheck`
+survives the widening: `lib/types` in `4.0.2` is byte-identical to `4.0.1` (`diff -rq`), and the
+devDependency now resolves to `4.0.2`, which is what a consumer's fresh install resolves.
+
+**npm is what fails here, so npm is what verified it.** A tarball packed from this tree installs
+into a clean project already resolving `0.1.2-alpha.5` and `@deepseek-ai/cordis@4.0.2`, and the
+built plugin imports under that tree; the published `0.7.0` refuses the same project. The same
+pair of runs against a project on `0.1.1-rc.2` fails on `peer @deepseek-ai/dsh-llm@"^0.1.0-rc.6"`
+before the fix and succeeds after it.
+
+**CI covers what the README claims and no more.** The end-to-end matrix runs every published rc
+the range admits — `0.1.0-rc.6`, `rc.7`, `rc.8`, `0.1.1-rc.1`, `0.1.1-rc.2` — and a separate job
+typechecks and builds against the `alpha` dist-tag rather than driving it end to end, because the
+break the `0.1.2` line carries is a type move that no end-to-end leg would have seen.
