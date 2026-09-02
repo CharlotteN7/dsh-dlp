@@ -202,4 +202,74 @@ tier 1 always scans everything. When tier 2 saw less than the whole result the a
 says `truncatedScan: true`, and that record is written even when nothing was found, so a
 partial scan never looks like a clean one.
 
+### Why there is no entropy rule
+
+The argument is arithmetic first and measurement second.
+
+Shannon entropy of a string of length L is bounded by log₂L, because L characters cannot carry
+more than L distinct symbols. So a threshold of *t* bits per character is also a **length floor**:
+no string shorter than 2^*t* characters can reach it, whatever it holds. A 20-character token
+cannot score above 4.32 bits per character even if every character in it is different. Picking a
+threshold picks the shortest secret the rule could ever catch, and the two cannot be traded
+against each other.
+
+The measurement decides where that floor lands in practice.
+
+**Corpus.** Two, so the answer does not hang on one tree:
+
+1. this package's own installed tree — `src/`, `tests/`, `package.json`, `pnpm-lock.yaml` and
+   `node_modules/`, which `pnpm-lock.yaml` pins exactly. It holds what a `read` or a `grep`
+   returns in a JavaScript repository: source, shipped and minified bundles, the lockfile's
+   base64 SHA-512 integrity hashes, hex digests and UUIDs. These docs are deliberately left out
+   of it, so editing the page cannot move the number the page reports;
+2. a checkout of the harness itself — `packages/` and `apps/`.
+
+**Method.** A candidate token is a maximal run of `[A-Za-z0-9+/=_-]` of at least 16 characters —
+the alphabet of base64, hex and every common token format, which is what a published entropy
+scanner tokenizes on. Each token scores Shannon entropy over its own character frequencies.
+Symbolic links are skipped, so a pnpm tree counts each real file once. Two rates are reported per
+threshold: the share of candidate tokens flagged, and the share of files carrying at least one
+flagged token — the second being the one that says how often a tool result would come back with a
+spurious placeholder in it.
+
+`scripts/measure-entropy.mjs` is the whole of it:
+
+```sh
+node scripts/measure-entropy.mjs src tests package.json pnpm-lock.yaml node_modules
+```
+
+**Result**, on an i9-12900H under Node 22.23.2:
+
+| Corpus | Files | Candidate tokens | Lowest false-positive-free threshold | Its length floor |
+|---|---|---|---|---|
+| this package's installed tree | 3,572 | 217,651 | 6.03 bits/char | **66 characters** |
+| the harness checkout | 10,294 | 393,485 | 5.99 bits/char | **64 characters** |
+
+A rule set at either threshold cannot fire on anything shorter than 64 characters. Almost
+every format tier 1 matches is shorter than that: an AWS access key id is 20 characters, a
+Stripe `sk_live_` key 32, a GitHub `ghp_` token 40, a Slack bot token 56. The rule would fire on
+PEM bodies and long base64 blobs — which the PEM and JWT rules already match by their
+delimiters — and on nothing else.
+
+Lowering the threshold to buy a shorter floor stops being free immediately:
+
+| Threshold | Length floor | Tokens flagged (this tree / harness) | Files hit (this tree / harness) |
+|---|---|---|---|
+| 6.03 / 5.99 | 66 / 64 | 0.00% / 0.00% | 0.00% / 0.00% |
+| 5.60 | 49 | 0.03% / 0.00% | 0.98% / 0.03% |
+| 5.00 | 32 | 0.17% / 0.00% | 1.26% / 0.03% |
+| 4.46 | 23 | 0.58% / 0.06% | 3.98% / 0.72% |
+| 4.20 | 19 | 5.25% / 0.75% | 16.13% / 12.76% |
+| 4.00 | 16 | 16.09% / 8.67% | 38.07% / 35.56% |
+
+So the 22-character floor an earlier revision of these docs claimed as false-positive-free costs
+4.46 bits per character, where roughly one file in 25 already carries a spurious match; and a
+16-character floor — the shortest that reaches most token formats — puts a spurious match in
+better than a third of them.
+
+The conclusion the earlier figure was reaching for holds, and holds harder than it said: an
+entropy rule that is safe to ship catches only strings longer than every format this package
+cares about, and one short enough to catch them is not safe to ship. It would add false positives
+without adding a single detection the prefix rules do not already make.
+
 ---

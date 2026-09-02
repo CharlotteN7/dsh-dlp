@@ -1120,3 +1120,30 @@ Both halves are E2E: one run proves a listener registered ahead of this plugin c
 restore the raw value, and one proves a later-registering `prepend` listener still can. The
 second is a pinned limit, not a regression test — it asserts that the documented hole is still
 the hole it is documented to be.
+
+## 28. There is no entropy rule, and the figure that said so was understated
+
+The claim shipped as "at a false-positive-free threshold the miss rate is 100% below 22
+characters". Re-measuring makes the same argument, harder.
+
+Shannon entropy of a length-L string is bounded by log₂L, so a threshold of *t* bits per
+character is also a length floor of 2^*t*: the shortest secret a rule at that threshold could
+ever flag. Threshold and floor are one parameter, not two.
+
+`scripts/measure-entropy.mjs` sweeps thresholds over two corpora — this package's installed tree,
+which `pnpm-lock.yaml` pins, and a checkout of the harness — scoring every maximal
+`[A-Za-z0-9+/=_-]` run of 16 characters or more. The lowest threshold that produces no false
+positive at all is 6.03 and 5.99 bits per character, whose floors are **66 and 64 characters**.
+The 22-character floor needs 4.46 bits per character, which is not false-positive-free: it flags
+0.58% and 0.06% of candidate tokens, landing a spurious match in 3.98% and 0.72% of files.
+
+So the case against the rule is stronger than the old figure claimed, in both directions: the
+safe threshold misses more than it said (everything below 64 characters, which is every format
+in tier 1 including a 56-character Slack bot token), and the 22-character threshold costs more
+than it said (it is not free at all). `docs/redaction.md` carries the corpus, the method, the
+sweep and the command.
+
+A second reading of "false positive rate" — the share of *files* rather than of tokens — is
+reported beside the first, because it is the one that answers "how often would a tool result come
+back with a spurious placeholder in it". At the 16-character floor, the shortest that reaches
+most token formats, that rate is 38.07% and 35.56%.

@@ -57,9 +57,9 @@ Three limits worth knowing before you rely on it:
   defeats it — one glob character, quote-splitting, `find -exec`, a substitution that assembles
   the path from pieces, a base64 round-trip, each verified. **Do not count this arm as a
   control.**
-- **Detection is pattern-based.** No entropy rule (measured, not assumed: at a false-positive-free
-  threshold the miss rate is 100% below 22 characters). Encoded forms pass. A homoglyph defeats
-  every rule in this package.
+- **Detection is pattern-based.** No entropy rule (measured, not assumed: the lowest
+  false-positive-free threshold cannot flag anything shorter than 64–66 characters). Encoded
+  forms pass. A homoglyph defeats every rule in this package.
 
 [The full list of limits →](https://charlotten7.github.io/dsh-dlp/)
 

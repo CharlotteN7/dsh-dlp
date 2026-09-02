@@ -69,12 +69,12 @@ More limits worth stating up front:
   content blocks. **A homoglyph defeats every rule in this package**, including the
   invisible-character ones.
 - **There is no entropy rule, and that was measured rather than assumed.** Shannon entropy is
-  bounded by log₂L for a string of length L, so a 20-character token cannot score above 4.32
-  bits per character however random it is. At the threshold where ordinary tool output —
-  hashes, minified bundles, base64 blobs, UUIDs — produces no false positives, the miss rate
-  is 100% for anything up to 22 characters, which is most of the credential formats worth
-  catching. A detector that fires on the long ones the prefix rules already catch and misses
-  the rest is not worth the false positives it costs.
+  bounded by log₂L for a string of length L, so a threshold of *t* bits per character can never
+  flag anything shorter than 2^*t*. At the lowest threshold that produces **no** false positives
+  on ordinary tool output, that floor measures **64–66 characters** — so such a rule misses every
+  credential shorter than that, which is nearly all of them. Buying the 22-character floor the
+  earlier figure named means dropping to 4.46 bits per character, which is not false-positive-free
+  at all. [The measurement, its corpus and its method →](redaction.md#why-there-is-no-entropy-rule)
 - **A secret containing a delimiter can still be split across two redactions.** Every reported
   span grows outward to the nearest delimiter, which over-redacts in the safe direction, but a
   secret whose own text contains one of those delimiters is covered by two placeholders with the
