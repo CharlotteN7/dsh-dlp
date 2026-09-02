@@ -48,7 +48,9 @@ Three limits worth knowing before you rely on it:
 
 - **Only the guard floor is unconditional.** Every other seam can be neutralised by a listener
   registered ahead of ours. `ctx.tools.guard()` is order-independent only because it has no allow
-  arm.
+  arm. Result redaction registers with `{ prepend: true }` so it gets the last word over
+  listeners already registered — but a listener registering after it with the same option lands
+  ahead of it again.
 - **The shell-command arm is advisory pattern-matching.** It tests the whole command line and
   each of its tokens, so a credential path left *spelled* in the command is caught whatever
   program would open it: `python3 -c "open('~/.ssh/id_rsa')"` is denied. Changing the spelling

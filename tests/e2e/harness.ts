@@ -120,6 +120,17 @@ export interface AgentRunOptions {
    */
   readonly extraPlugins?: Readonly<Record<string, string>>
   /**
+   * ESM plugin packages mounted through a bundle layer of their own, listed
+   * ahead of this package in `dsh.profile.bundles` so they mount — and so
+   * register their listeners — first.
+   *
+   * `extraPlugins` cannot express that: a patch `insert` appends, and the
+   * profile's own patch layer is applied after every bundle layer, so a plugin
+   * mounted that way always mounts last. Listener order is what a test of
+   * waterfall placement is about, so it has to be controllable.
+   */
+  readonly earlierBundlePlugins?: Readonly<Record<string, string>>
+  /**
    * Environment overrides for the agent process. An `undefined` value removes
    * the variable, which is how a run opts back into a harness default the
    * harness itself turns off.
@@ -282,6 +293,26 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
     }
     copyRuntimeDependencies(installDir)
 
+    for (const [pluginName, source] of Object.entries(options.earlierBundlePlugins ?? {})) {
+      const pluginDir = join(profileDir, 'node_modules', pluginName)
+      mkdirSync(pluginDir, { recursive: true })
+      writeFileSync(join(pluginDir, 'package.json'), `${JSON.stringify({
+        name: pluginName,
+        version: '0.0.0',
+        private: true,
+        type: 'module',
+        main: 'index.js',
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      }, undefined, 2)}\n`)
+      writeFileSync(join(pluginDir, 'index.js'), source)
+      writeFileSync(join(pluginDir, 'cordis.patch.yml'), [
+        '- insert:',
+        `    - id: ${pluginName}`,
+        `      name: '${pluginName}'`,
+        '',
+      ].join('\n'))
+    }
+
     for (const [pluginName, source] of Object.entries(options.extraPlugins ?? {})) {
       const pluginDir = join(profileDir, 'node_modules', pluginName)
       mkdirSync(pluginDir, { recursive: true })
@@ -305,7 +336,16 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       name: 'dsh-profile-e2e',
       private: true,
       dependencies: {},
-      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', PLUGIN_PACKAGE] } },
+      dsh: {
+        profile: {
+          bundles: [
+            '@deepseek-ai/dsh-base',
+            '@deepseek-ai/dsh-headless',
+            ...Object.keys(options.earlierBundlePlugins ?? {}),
+            PLUGIN_PACKAGE,
+          ],
+        },
+      },
     }, undefined, 2)}\n`)
 
     // Later layers win per row, and a patch REPLACES a row's whole `config`,

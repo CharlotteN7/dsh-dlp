@@ -1055,3 +1055,31 @@ before the fix and succeeds after it.
 the range admits — `0.1.0-rc.6`, `rc.7`, `rc.8`, `0.1.1-rc.1`, `0.1.1-rc.2` — and a separate job
 typechecks and builds against the `alpha` dist-tag rather than driving it end to end, because the
 break the `0.1.2` line carries is a type move that no end-to-end leg would have seen.
+
+## 27. Result redaction registers with `prepend`, which is most of an order fix
+
+Cordis composes a waterfall outermost-first: `EventsService.waterfall` shifts listeners off the
+front of the dispatch list and the first one registered wraps every other. A
+`tools/post-execute` listener registered before this plugin therefore saw the redacted decision
+come back out of `next()` and could return a different one, and an E2E run with such a listener
+mounted through a bundle layer listed ahead of this package put the raw token back into both
+the model-facing content and `meta`, which is what `session.append('tool/result', …)` persists.
+
+The listener is now registered with `{ prepend: true }`, the same option the mutation snapshot
+uses. That reverses the relationship: this plugin becomes the outermost listener, `await next()`
+returns whatever the rest of the chain decided, and the redaction is applied to that.
+
+What it does not fix, and why nothing here can:
+
+- `prepend` **unshifts**. A listener registered after this plugin with the same option lands
+  ahead of it and gets the last word back. There is no "register last, permanently" option, and
+  a seam that has an accept arm cannot be made order-independent — that property is exactly what
+  `ctx.tools.guard()` buys by having no accept arm, and the guard cannot rewrite a result.
+- Profile entries mount concurrently, so list position does not by itself decide who registers
+  first. The E2E that pins the residual hole delays its registration rather than relying on
+  where its row sits.
+
+Both halves are E2E: one run proves a listener registered ahead of this plugin can no longer
+restore the raw value, and one proves a later-registering `prepend` listener still can. The
+second is a pinned limit, not a regression test — it asserts that the documented hole is still
+the hole it is documented to be.

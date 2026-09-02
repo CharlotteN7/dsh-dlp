@@ -20,10 +20,18 @@ More limits worth stating up front:
 
 - **Only the guard floor is unconditional.** Every other seam can be neutralised by a listener
   registered ahead of ours: a `tools/pre-execute` listener that returns without calling `next()`
-  disables the breadth tier, and a `tools/post-execute` listener ahead of ours can replace a
-  result after it was redacted. `ctx.tools.guard()` is order-independent only because it has no
+  disables the breadth tier. `ctx.tools.guard()` is order-independent only because it has no
   allow arm. A `tools/pre-execute` deny also skips guards entirely, so the audit sink cannot
   claim to have seen every call.
+- **Result redaction registers first, which closes most of that gap and not all of it.** Cordis
+  runs waterfall listeners outermost-first, so the `tools/post-execute` listener is registered
+  with `{ prepend: true }` and redacts the decision the rest of the chain settled on rather than
+  having its own replaced afterwards. What that does *not* close: `prepend` unshifts, so a
+  listener registered **after** this plugin with the same option lands ahead of it and gets the
+  last word back. Profile entries also mount concurrently, so list position does not by itself
+  decide who registers first. Both halves are exercised end to end — one run where a listener
+  registered ahead of this plugin can no longer restore the raw value, and one where a
+  later-registering `prepend` listener still can.
 - **The shell-command arm is advisory pattern-matching.** A `bash` command line is tested
   whole, and then split on shell-ish separators with each token tested as a path. What that
   covers is any command *spelling* a credential path, whatever program would open it:

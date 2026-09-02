@@ -4,8 +4,11 @@
  *
  * Both are best-effort by construction. A `tools/pre-execute` listener
  * registered ahead of ours can return without calling `next()` and neutralize
- * the breadth tier; a `tools/post-execute` listener ahead of ours can replace a
- * result after we redacted it. Only `ctx.tools.guard()` is order-independent.
+ * the breadth tier. Result redaction registers with `{ prepend: true }`, so it
+ * redacts whatever the rest of the waterfall settled on rather than having its
+ * own decision replaced afterwards — but `prepend` unshifts, so a listener
+ * that registers later with the same option still lands ahead of it. Only
+ * `ctx.tools.guard()` is order-independent, and it cannot rewrite a result.
  * What these seams buy is breadth: they can await, so `@secretlint/core`'s
  * whole rule set applies here and not in the guard.
  * @module dsh-dlp/results

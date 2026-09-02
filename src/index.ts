@@ -17,6 +17,8 @@
  * 3. `tools/post-execute` — result redaction, applied before the `tool/result`
  *    session event is appended, so the durable log records the redacted copy;
  *    a result that cannot be cleaned is withheld rather than accepted.
+ *    Prepended, so it redacts what the rest of the waterfall returned; a
+ *    listener registering later with the same option still runs ahead of it.
  * 4. `session-telemetry/record` — fail-closed redaction of exported telemetry,
  *    reaching tier 1 only because the waterfall is synchronous.
  * 5. `llm/stream` — neutralising remote markdown image destinations in
@@ -340,6 +342,11 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   if (policy.resultRedaction) {
+    // Prepended for the same reason as the snapshot listener above, and with
+    // the same limit: listeners run outermost-first, so registering ahead of
+    // the chain is what lets this one redact the decision the rest of the
+    // waterfall settled on rather than have its own replaced afterwards. A
+    // listener registered later with the same option still lands ahead of it.
     ctx.on('tools/post-execute', async (
       exec: ToolExecution,
       result: Readonly<ToolExecutionResult>,
@@ -371,7 +378,7 @@ export function apply(ctx: Context, config: Config): void {
         })
       }
       return redacted.decision
-    })
+    }, { prepend: true })
   }
 
   if (policy.remoteImageNeutralization) {

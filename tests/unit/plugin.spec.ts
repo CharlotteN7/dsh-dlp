@@ -1063,6 +1063,10 @@ describe('the mutation check at the guard', () => {
     expect(mount().options.get('tools/pre-execute')?.[0]).toMatchObject({ prepend: true })
   })
 
+  it('registers result redaction ahead of the listeners already on the same waterfall', () => {
+    expect(mount().options.get('tools/post-execute')?.[0]).toMatchObject({ prepend: true })
+  })
+
   it('treats a deny or an ask from another listener as ordinary traffic', async () => {
     const plugin = mount()
     const snapshot = plugin.listeners.get('tools/pre-execute')?.[0] as
