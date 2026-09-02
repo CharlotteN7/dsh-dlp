@@ -237,12 +237,16 @@ export async function redactDecision(
     // the model.
     const prepared = await prepareScan([...contentStrings(decision.feedback), ...messageStrings(attached)], policy)
     const redacted = redactContent(decision.feedback, prepared.scan, hasher)
-    const contexts = redactUserMessages(attached, prepared.scan, hasher, '/additionalContexts')
+    const redactedContexts = redactUserMessages(attached, prepared.scan, hasher, '/additionalContexts')
     return {
-      decision: redacted.changed || contexts.changed
-        ? { ...decision, feedback: redacted.content, additionalContexts: contexts.messages }
+      decision: redacted.changed || redactedContexts.changed
+        ? {
+          ...decision,
+          feedback: redacted.content,
+          ...redactedContexts.changed ? { additionalContexts: redactedContexts.messages } : {},
+        }
         : decision,
-      spans: [...redacted.spans, ...contexts.spans],
+      spans: [...redacted.spans, ...redactedContexts.spans],
       truncatedScan: prepared.truncated,
       indicators: prepared.indicators,
     }
