@@ -84,6 +84,53 @@ function rewriterSource(late: boolean): string {
   ].join('\n')
 }
 
+/** Package name of the listener that attaches an `additionalContexts` entry. */
+const ATTACHER = 'e2e-context-attacher'
+
+/** Package name of the plugin whose tool body defers a context. */
+const DEFERRER = 'e2e-context-deferrer'
+
+/** One `UserMessage`, spelled out because the fixture plugins import nothing. */
+function contextLiteral(owner: string, text: string): string {
+  return JSON.stringify({
+    id: `${owner}-context-1`,
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: owner },
+  })
+}
+
+/** A `tools/post-execute` listener that attaches one context to whatever it is handed. */
+function attacherSource(text: string): string {
+  return [
+    `export const name = ${JSON.stringify(ATTACHER)}`,
+    'export function apply(ctx) {',
+    "  ctx.on('tools/post-execute', async (exec, result, next) => {",
+    '    const decision = await next()',
+    `    return { ...decision, additionalContexts: [${contextLiteral(ATTACHER, text)}] }`,
+    '  })',
+    '}',
+    '',
+  ].join('\n')
+}
+
+/**
+ * A `tools/execute` listener that defers one context, which is how a composite
+ * tool ferries a nested result's contexts onto its own.
+ */
+function deferrerSource(text: string): string {
+  return [
+    `export const name = ${JSON.stringify(DEFERRER)}`,
+    'export function apply(ctx) {',
+    "  ctx.on('tools/execute', (exec, next) => {",
+    `    exec.deferContext(${contextLiteral(DEFERRER, text)})`,
+    '    return next()',
+    '  })',
+    '}',
+    '',
+  ].join('\n')
+}
+
 /** Rows the agent persisted for completed tool calls. */
 function toolResults(log: readonly Record<string, unknown>[]): Record<string, unknown>[] {
   return log.filter(row => row['type'] === 'tool/result')
@@ -280,6 +327,59 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
     expect(result.code, result.stderr).toBe(0)
     expect(result.auditRecords.length).toBeGreaterThan(0)
     expect(result.auditLogMode).toBe(0o640)
+  }, 120_000)
+
+  it('redacts a secret a downstream listener attached as an additionalContext', async () => {
+    // An `additionalContexts` entry is model-visible and durable: the loop
+    // hands each one to the inbox, which appends an `agent/inbox/spliced`
+    // event carrying the whole message, and the next step presents it. They
+    // used to be forwarded through this plugin's own redaction arm untouched.
+    const result = await runAgent({
+      task: 'print the marker',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'bash',
+      toolArguments: JSON.stringify({ command: 'printf E2E_CONTEXT', description: 'Print the marker' }),
+      successText: 'done',
+      extraPlugins: { [ATTACHER]: attacherSource(`hook note: ${SLACK_TOKEN}`) },
+      extraProfilePatch: mountRow(ATTACHER),
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const spliced = result.sessionLog.filter(row => row['type'] === 'agent/inbox/spliced')
+    expect(spliced.length).toBeGreaterThan(0)
+    expect(JSON.stringify(spliced)).toContain('hook note:')
+    expect(JSON.stringify(result.sessionLog)).not.toContain(SLACK_TOKEN)
+    expect(JSON.stringify(result.sessionLog)).toContain('[REDACTED:dsh-dlp:slack-token:')
+    expect(JSON.stringify(result.modelRequests)).not.toContain(SLACK_TOKEN)
+    expect(JSON.stringify(result.auditRecords)).not.toContain(SLACK_TOKEN)
+  }, 120_000)
+
+  it('withholds a result whose deferred context no accept arm could have cleaned', async () => {
+    // The registry concatenates `result.additionalContexts` ahead of the
+    // decision's own on every accept arm, so nothing an accept can say drops
+    // or rewrites a context the tool body deferred. Blocking is the only
+    // decision that drops it, which is `meta`'s case exactly.
+    const result = await runAgent({
+      task: 'print the marker',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'bash',
+      toolArguments: JSON.stringify({ command: 'printf E2E_DEFERRED', description: 'Print the marker' }),
+      successText: 'done',
+      extraPlugins: { [DEFERRER]: deferrerSource(`deferred note: ${SLACK_TOKEN}`) },
+      extraProfilePatch: mountRow(DEFERRER),
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    const results = JSON.stringify(toolResults(result.sessionLog))
+    expect(results).toContain('dsh-dlp withheld this tool result')
+    expect(JSON.stringify(result.sessionLog)).not.toContain(SLACK_TOKEN)
+    expect(JSON.stringify(result.sessionLog)).not.toContain('deferred note')
+    expect(JSON.stringify(result.modelRequests)).not.toContain(SLACK_TOKEN)
+
+    const redactions = result.auditRecords.filter(record => record['kind'] === 'result-redaction')
+    expect(redactions.length).toBeGreaterThan(0)
+    expect(JSON.stringify(redactions)).toContain('dsh-dlp/slack-token')
+    expect(JSON.stringify(result.auditRecords)).not.toContain(SLACK_TOKEN)
   }, 120_000)
 
   it('writes an ordinary .gitignore that mentions .env', async () => {

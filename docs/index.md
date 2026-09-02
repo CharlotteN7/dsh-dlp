@@ -94,8 +94,13 @@ More limits worth stating up front:
   shapes; a tool that skips its confirmation under some other argument name is not covered, and
   the registry is open, so this list is a floor on what is known rather than a description of
   what exists.
-- **`additionalContexts` are not scanned.** They are model-visible `UserMessage` payloads and
-  this release does not redact them.
+- **`additionalContexts` are scanned, and a deferred one can cost you the result.** They are
+  model-visible `UserMessage` payloads that also reach the durable log, through the
+  `agent/inbox/spliced` event the inbox appends. The ones a `tools/post-execute` decision
+  carries are redacted in place. The ones a *tool body* deferred are not reachable: the registry
+  concatenates `result.additionalContexts` ahead of the decision's own on every accept arm, so a
+  dirty one is withheld — the whole successful result is blocked, because that is the only
+  decision that drops them. `docs/redaction.md` has the reasoning.
 - **Local writes are out of scope.** A `write` or `edit` into a synced directory moves data off
   the machine without going through an egress-capable tool.
 - **Telemetry redaction covers a mounted backend's records only.** A second exporter mounted

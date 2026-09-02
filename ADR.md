@@ -139,6 +139,43 @@ listener's own replacement. The one exception is a downstream `accept{content}` 
 that is dirty: the value arm overrules it, because keeping the content replacement would leave
 the value in the session log. The harness re-renders from the redacted value.
 
+### `additionalContexts` are on the same ladder, with the rungs in the same order
+
+An `additionalContexts` entry is a `UserMessage` the agent loop hands to the inbox; the inbox
+appends an `agent/inbox/spliced` event carrying the whole message and presents it at the next
+step. So a context is model-visible *and* durable — the two properties this whole seam exists
+for. They were forwarded through the redaction arm verbatim.
+
+Which arm cleans them follows the same question as the value/`meta` split: what can this
+listener actually rewrite?
+
+- **The contexts the decision carries** are the ones the returned decision owns, so they are
+  redacted in place. This rewrites another listener's data, which is worth stating plainly — but
+  it is the same act the value arm already performs on a downstream `accept{content}`, and its
+  cost is a placeholder inside a note, not a discarded result. Blocking a successful result
+  because a downstream listener attached a dirty context would be heavier than the silence it
+  replaces, and §5's reasoning about which arm reaches the log gives no reason to prefer it:
+  the rewrite reaches the log perfectly well.
+- **The contexts the tool body deferred** cannot be reached. `postExecute` builds every accept
+  arm as `[...result.additionalContexts, ...decision.additionalContexts]`, so a deferred context
+  rides through whatever the decision says; only `block` drops them, because a block exposes just
+  the blocking decision's own. That is `meta`'s position exactly, and it takes `meta`'s answer.
+  Verified identical in `0.1.0-rc.6`, `0.1.0-rc.7` and `0.1.1-rc.2`.
+
+So: scan both, redact what is redactable, block only what is not. The false-positive cost of the
+heavy arm is confined to the surface where redaction is impossible, and it is not a rare surface —
+Code Mode's parallel tool calling re-defers a nested result's contexts onto the outer one.
+
+Within one message, `content` and the text the `source` records are redacted together. A
+`snapshot` source repeats the block text in `sections[].text` and a `notice` source repeats its
+opening in `summary`; both go into the log with the message, and `MessageSourceMap` is
+merge-extensible, so a plugin's own source kind may carry more. Redacting the blocks alone would
+leave a copy of the secret in the log — a feature with a hollow centre. The same scan and the
+same key run over both halves, so identical text yields an identical placeholder and the copies
+stay in step, which is what `time-context`'s invariant checker requires of a snapshot. A
+message's `id` and `role`, and its source's `kind`, `form` and `plugin`, say what the message
+*is* rather than what it says, and are left alone.
+
 ### Scanning the rendering, not only the strings
 
 A per-string walk cannot see a secret that no single string reproduces, and that is the common

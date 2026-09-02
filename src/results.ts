@@ -14,7 +14,7 @@
  * @module dsh-dlp/results
  */
 
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import type {
   JsonSchemaNode,
   PostToolDecision,
@@ -32,7 +32,14 @@ import {
 } from './detectors.ts'
 import { isEgressCapable } from './paths.ts'
 import type { ResolvedPolicy } from './policy.ts'
-import { nestedStrings, redactContent, redactJson, type RedactedSpan, type SpanHasher } from './redaction.ts'
+import {
+  nestedStrings,
+  redactContent,
+  redactJson,
+  redactUserMessages,
+  type RedactedSpan,
+  type SpanHasher,
+} from './redaction.ts'
 import { redactionBreaksSchema } from './schema.ts'
 
 /**
@@ -108,6 +115,18 @@ function contentStrings(blocks: readonly ContentBlock[]): string[] {
 }
 
 /**
+ * Text one set of `additionalContexts` carries: the model-facing blocks, plus
+ * whatever text the source records beside them — a `snapshot` source repeats
+ * the block text in `sections[].text`, a `notice` source its opening in
+ * `summary`, and a plugin's own source kind may carry more.
+ * @param messages - the contexts attached to a decision or ferried on a result.
+ * @returns every string those messages would put in front of the model or into the log.
+ */
+function messageStrings(messages: readonly UserMessage[]): string[] {
+  return messages.flatMap(message => [...contentStrings(message.content), ...nestedStrings(message.source)])
+}
+
+/**
  * Strings the harness keeps in the durable result when the decision does not
  * replace the canonical value.
  *
@@ -168,8 +187,23 @@ function withheldFeedback(spans: readonly RedactedSpan[]): ContentBlock[] {
  *   persisted surfaces are already clean — a failed result, which has no
  *   value, or a success whose secret exists only in the rendered content.
  * - `block` is the fallback when neither works: a failed result whose `meta`
- *   carries a secret, or a value that still scans dirty after redaction.
- *   Blocking replaces the whole result, which is the only way to drop `meta`.
+ *   carries a secret, a value that still scans dirty after redaction, or a
+ *   context the tool body deferred. Blocking replaces the whole result, which
+ *   is the only way to drop either.
+ *
+ * `additionalContexts` reach both the model and the log — the loop hands each
+ * one to the inbox, which appends an `agent/inbox/spliced` event carrying the
+ * whole message — and they arrive from two places that are not equally
+ * reachable:
+ *
+ * - the ones this decision carries, which the returned decision owns, so they
+ *   are redacted in place. Rewriting them is a rewrite of another listener's
+ *   data, which is the same thing the value arm already does to a downstream
+ *   `accept{content}`, and it costs a placeholder rather than a lost result;
+ * - the ones the tool body deferred, which the registry concatenates ahead of
+ *   the decision's own on *every* accept arm. No accept can rewrite or drop
+ *   them, so a dirty one is withheld. That is `meta`'s case exactly, and it is
+ *   the one place scanning contexts can cost a successful result.
  *
  * Replacing the value is re-validated by the registry against the tool's
  * `output.schema`, and a schema that pins the redacted string rejects it. That
@@ -195,12 +229,20 @@ export async function redactDecision(
   hasher: SpanHasher,
   outputSchema?: JsonSchemaNode,
 ): Promise<ResultRedaction> {
+  const attached = decision.additionalContexts ?? []
+
   if (decision.kind === 'block') {
-    const prepared = await prepareScan(contentStrings(decision.feedback), policy)
+    // A block exposes only the blocking decision's own contexts, so the
+    // feedback and those are the whole surface this arm can put in front of
+    // the model.
+    const prepared = await prepareScan([...contentStrings(decision.feedback), ...messageStrings(attached)], policy)
     const redacted = redactContent(decision.feedback, prepared.scan, hasher)
+    const contexts = redactUserMessages(attached, prepared.scan, hasher, '/additionalContexts')
     return {
-      decision: redacted.changed ? { ...decision, feedback: redacted.content } : decision,
-      spans: redacted.spans,
+      decision: redacted.changed || contexts.changed
+        ? { ...decision, feedback: redacted.content, additionalContexts: contexts.messages }
+        : decision,
+      spans: [...redacted.spans, ...contexts.spans],
       truncatedScan: prepared.truncated,
       indicators: prepared.indicators,
     }
@@ -208,9 +250,7 @@ export async function redactDecision(
 
   const replacedValue = Object.hasOwn(decision, 'value') ? decision.value : undefined
   const replacedContent = Object.hasOwn(decision, 'content') ? decision.content : undefined
-  const contexts = decision.additionalContexts === undefined
-    ? {}
-    : { additionalContexts: decision.additionalContexts }
+  const deferred = result.additionalContexts ?? []
 
   // The value the harness will persist: a downstream replacement when there is
   // one, otherwise the tool's own. A failed result has no value at all.
@@ -220,32 +260,45 @@ export async function redactDecision(
     ? persistedStrings(result)
     : [...nestedStrings(replacedValue), ...result.meta === undefined ? [] : nestedStrings(result.meta)]
 
-  const prepared = await prepareScan([...persisted, ...visible], policy)
+  const prepared = await prepareScan(
+    [...persisted, ...visible, ...messageStrings(attached), ...messageStrings(deferred)],
+    policy,
+  )
   const dirty = (strings: readonly string[]): boolean => strings.some(text => prepared.scan(text).length > 0)
+
+  const redactedContexts = redactUserMessages(attached, prepared.scan, hasher, '/additionalContexts')
+  // A clean set is passed on as the array it arrived as, so a downstream
+  // listener's own messages are not rebuilt for nothing.
+  const contexts = decision.additionalContexts === undefined
+    ? {}
+    : { additionalContexts: redactedContexts.changed ? redactedContexts.messages : decision.additionalContexts }
+
+  /** Withhold the result, keeping the redacted contexts the decision brought. */
+  const withhold = (spans: readonly RedactedSpan[], truncated: boolean): ResultRedaction => ({
+    decision: { kind: 'block', feedback: withheldFeedback(spans), ...contexts },
+    spans: [...spans, ...redactedContexts.spans],
+    truncatedScan: truncated,
+    indicators: prepared.indicators,
+  })
+
+  // Deferred contexts ride every accept arm untouched, so a dirty one settles
+  // the decision before any arm is considered.
+  const deferredSpans = redactUserMessages(deferred, prepared.scan, hasher, '/result/additionalContexts').spans
+  if (deferredSpans.length > 0) return withhold(deferredSpans, prepared.truncated)
 
   if (value !== undefined && dirty(nestedStrings(value))) {
     const redacted = redactJson(value, prepared.scan, hasher)
     if (redactionBreaksSchema(outputSchema, value, redacted.value)) {
-      return {
-        decision: { kind: 'block', feedback: withheldFeedback(redacted.spans) },
-        spans: redacted.spans,
-        truncatedScan: prepared.truncated,
-        indicators: prepared.indicators,
-      }
+      return withhold(redacted.spans, prepared.truncated)
     }
     const remaining = nestedStrings(redacted.value)
     const residual = await prepareScan(remaining, policy)
     if (remaining.some(text => residual.scan(text).length > 0)) {
-      return {
-        decision: { kind: 'block', feedback: withheldFeedback(redacted.spans) },
-        spans: redacted.spans,
-        truncatedScan: prepared.truncated || residual.truncated,
-        indicators: prepared.indicators,
-      }
+      return withhold(redacted.spans, prepared.truncated || residual.truncated)
     }
     return {
       decision: { kind: 'accept', value: redacted.value, ...contexts },
-      spans: redacted.spans,
+      spans: [...redacted.spans, ...redactedContexts.spans],
       truncatedScan: prepared.truncated,
       indicators: prepared.indicators,
     }
@@ -254,23 +307,22 @@ export async function redactDecision(
   // The value is clean, so the durable result is clean unless `meta` — which
   // no accept arm can rewrite — carries something of its own.
   if (result.meta !== undefined && dirty(nestedStrings(result.meta))) {
-    const spans = redactJson(result.meta, prepared.scan, hasher).spans
-    return {
-      decision: { kind: 'block', feedback: withheldFeedback(spans) },
-      spans,
-      truncatedScan: prepared.truncated,
-      indicators: prepared.indicators,
-    }
+    return withhold(redactJson(result.meta, prepared.scan, hasher).spans, prepared.truncated)
   }
 
   const blocks = replacedContent ?? result.content
   const redacted = redactContent(blocks, prepared.scan, hasher)
   if (!redacted.changed) {
-    return { decision, spans: [], truncatedScan: prepared.truncated, indicators: prepared.indicators }
+    return {
+      decision: redactedContexts.changed ? { ...decision, ...contexts } : decision,
+      spans: redactedContexts.spans,
+      truncatedScan: prepared.truncated,
+      indicators: prepared.indicators,
+    }
   }
   return {
     decision: { kind: 'accept', content: redacted.content, ...contexts },
-    spans: redacted.spans,
+    spans: [...redacted.spans, ...redactedContexts.spans],
     truncatedScan: prepared.truncated,
     indicators: prepared.indicators,
   }

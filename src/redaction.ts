@@ -16,7 +16,7 @@
  */
 
 import { createHmac } from 'node:crypto'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, MessageSource, UserMessage } from '@deepseek-ai/dsh-llm'
 import { severityRank, type Detection, type Severity } from './detectors.ts'
 
 /**
@@ -213,10 +213,46 @@ function pointerSegment(segment: string): string {
 }
 
 /**
- * Redact every string inside a JSON value, at any depth.
+ * Replace every detected region of every string inside one structure.
  *
  * Object *keys* are left alone: a key is structure, not payload, and renaming
- * one would break the owning tool's `output.schema` on re-validation.
+ * one would break the owning tool's `output.schema` on re-validation. The
+ * structure is otherwise rebuilt unchanged — only string leaves differ — which
+ * is what lets the callers re-type the result as what they handed in.
+ * @param node - the structure to walk.
+ * @param path - JSON pointer of this node.
+ * @param scan - synchronous detector applied to each string.
+ * @param hasher - mints each span's keyed hash.
+ * @param spans - collects every span replaced anywhere in the walk.
+ * @returns the same structure with each detected region replaced.
+ */
+function redactNode(
+  node: unknown,
+  path: string,
+  scan: (text: string) => readonly Detection[],
+  hasher: SpanHasher,
+  spans: RedactedSpan[],
+): unknown {
+  if (typeof node === 'string') {
+    const redacted = redactText(node, scan(node), hasher, path)
+    if (redacted.spans.length === 0) return node
+    spans.push(...redacted.spans)
+    return redacted.text
+  }
+  if (Array.isArray(node)) {
+    return node.map((item, index) => redactNode(item, `${path}/${index}`, scan, hasher, spans))
+  }
+  if (typeof node === 'object' && node !== null) {
+    return Object.fromEntries(
+      Object.entries(node).map(([key, item]) =>
+        [key, redactNode(item, `${path}/${pointerSegment(key)}`, scan, hasher, spans)]),
+    )
+  }
+  return node
+}
+
+/**
+ * Redact every string inside a JSON value, at any depth.
  * @param value - the structure to redact.
  * @param scan - synchronous detector applied to each string.
  * @param hasher - mints each span's keyed hash.
@@ -228,29 +264,10 @@ export function redactJson(
   hasher: SpanHasher,
 ): { value: JsonValue; spans: readonly RedactedSpan[]; changed: boolean } {
   const spans: RedactedSpan[] = []
-  let changed = false
-
-  const walk = (node: JsonValue, path: string): JsonValue => {
-    if (typeof node === 'string') {
-      const redacted = redactText(node, scan(node), hasher, path)
-      if (redacted.spans.length === 0) return node
-      changed = true
-      spans.push(...redacted.spans)
-      return redacted.text
-    }
-    if (Array.isArray(node)) {
-      return node.map((item, index) => walk(item, `${path}/${index}`))
-    }
-    if (typeof node === 'object' && node !== null) {
-      return Object.fromEntries(
-        Object.entries(node).map(([key, item]) => [key, walk(item, `${path}/${pointerSegment(key)}`)]),
-      )
-    }
-    return node
-  }
-
-  const result = walk(value, '')
-  return { value: result, spans, changed }
+  // `redactNode` replaces strings with strings and rebuilds everything else as
+  // it found it, so what comes back is the same JSON shape it was handed.
+  const result = redactNode(value, '', scan, hasher, spans) as JsonValue
+  return { value: result, spans, changed: spans.length > 0 }
 }
 
 /**
@@ -260,22 +277,80 @@ export function redactJson(
  * @param blocks - the content blocks to redact.
  * @param scan - synchronous detector applied to each block's text.
  * @param hasher - mints each span's keyed hash.
+ * @param pathPrefix - JSON pointer the recorded pointers hang off, for blocks that are not the decision's own.
  * @returns the redacted blocks, the spans replaced, and whether anything changed.
  */
 export function redactContent(
   blocks: readonly ContentBlock[],
   scan: (text: string) => readonly Detection[],
   hasher: SpanHasher,
+  pathPrefix = '',
 ): { content: ContentBlock[]; spans: readonly RedactedSpan[]; changed: boolean } {
   const spans: RedactedSpan[] = []
   let changed = false
   const content = blocks.map((block, index): ContentBlock => {
     if (block.type !== 'text') return block
-    const redacted = redactText(block.text, scan(block.text), hasher, `/${index}/text`)
+    const redacted = redactText(block.text, scan(block.text), hasher, `${pathPrefix}/${index}/text`)
     if (redacted.spans.length === 0) return block
     changed = true
     spans.push(...redacted.spans)
     return { ...block, text: redacted.text }
   })
   return { content, spans, changed }
+}
+
+/**
+ * Source fields that say what a message *is* rather than what it says. `kind`
+ * selects the source arm, `form` selects the fields that arm carries, and
+ * `plugin` names the producer; replacing one of those would change the
+ * message's identity rather than redact its text.
+ */
+const MESSAGE_SOURCE_STRUCTURE: ReadonlySet<string> = new Set(['kind', 'form', 'plugin'])
+
+/**
+ * Redact the text of the `UserMessage`s a tool decision carries.
+ *
+ * A message's payload is its model-facing `content` blocks and whatever text
+ * its `source` records: a `snapshot` source repeats the block text in
+ * `sections[].text`, a `notice` source repeats its opening in `summary`, and
+ * `MessageSourceMap` is merge-extensible, so a plugin's own source kind may
+ * carry text of its own. All of it is appended to the session log with the
+ * message, so redacting the blocks alone would leave a copy behind. Both
+ * halves are walked with the same scan and the same hasher, and identical text
+ * yields an identical placeholder, so the copies stay in step.
+ *
+ * `id` and `role` are left alone: the inbox addresses a message by its id.
+ * A message with nothing to replace is returned as the object it arrived as.
+ * @param messages - the contexts to redact, in the order they are attached.
+ * @param scan - synchronous detector applied to each string.
+ * @param hasher - mints each span's keyed hash.
+ * @param pathPrefix - JSON pointer the recorded pointers hang off.
+ * @returns the redacted messages, the spans replaced, and whether anything changed.
+ */
+export function redactUserMessages(
+  messages: readonly UserMessage[],
+  scan: (text: string) => readonly Detection[],
+  hasher: SpanHasher,
+  pathPrefix: string,
+): { messages: UserMessage[]; spans: readonly RedactedSpan[]; changed: boolean } {
+  const spans: RedactedSpan[] = []
+  const redacted = messages.map((message, index): UserMessage => {
+    const path = `${pathPrefix}/${index}`
+    const before = spans.length
+    const content = redactContent(message.content, scan, hasher, `${path}/content`)
+    spans.push(...content.spans)
+    // Rebuilt entry by entry so the discriminants pass through untouched;
+    // `redactNode` returns each remaining field as the shape it was given, so
+    // the result is the same source with redacted text.
+    const source = Object.fromEntries(
+      Object.entries(message.source).map(([key, value]: [string, unknown]) => [
+        key,
+        MESSAGE_SOURCE_STRUCTURE.has(key)
+          ? value
+          : redactNode(value, `${path}/source/${pointerSegment(key)}`, scan, hasher, spans),
+      ]),
+    ) as MessageSource
+    return spans.length === before ? message : { ...message, content: content.content, source }
+  })
+  return { messages: redacted, spans, changed: spans.length > 0 }
 }

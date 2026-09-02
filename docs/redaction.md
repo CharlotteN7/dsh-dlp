@@ -34,6 +34,38 @@ dirty after redaction — the result is **withheld**: the plugin returns a `bloc
 model gets an error naming the rule and the hash, and nothing dirty reaches the log. Blocking
 is the only decision that replaces the whole result, so it is the only way to drop `meta`.
 
+## Contexts attached to a result
+
+A tool result can carry `additionalContexts` — `UserMessage`s the agent loop hands to the inbox,
+which appends an `agent/inbox/spliced` event carrying the whole message and presents it at the
+next step. They are model-visible *and* durable, so they are scanned like anything else. They
+arrive from two places, and only one of them is reachable:
+
+| Where it came from | What the plugin can do |
+|---|---|
+| the `tools/post-execute` decision this plugin returns | redacted in place |
+| deferred by the tool body (`exec.deferContext`) | withheld, because no accept arm can rewrite or drop it |
+
+Redacting a downstream listener's contexts is a rewrite of another listener's data. It is the
+same thing the value arm already does to a downstream `accept{content}`, it costs a placeholder
+rather than a lost result, and the alternative — blocking a successful result because a listener
+attached a dirty note — is heavier than what it buys.
+
+The deferred half has no such choice. `postExecute` builds every accept arm as
+`[...result.additionalContexts, ...decision.additionalContexts]`, so a context the tool body
+deferred rides through untouched whatever the decision says; a `block` exposes only the blocking
+decision's own. That is `meta`'s position exactly, and it takes `meta`'s answer. This is the one
+place where scanning contexts can cost a successful result, and Code Mode's parallel tool calling
+re-defers a nested result's contexts onto the outer one, so it is not a rare shape.
+
+Within one message, the model-facing `content` blocks and the text its `source` records are
+redacted together: a `snapshot` source repeats the block text in `sections[].text` and a `notice`
+source repeats its opening in `summary`, both of which go into the log with the message.
+Redacting the blocks alone would leave a copy. The same scan and the same key run over both, so
+identical text yields an identical placeholder and the copies stay in step. A message's `id` and
+`role`, and its source's `kind`, `form` and `plugin`, say what the message *is* rather than what
+it says, and are left alone.
+
 Two consequences worth knowing:
 
 - Replacing a value re-validates it against the tool's `output.schema`, and a schema that pins

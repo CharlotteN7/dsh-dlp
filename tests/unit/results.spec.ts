@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { ToolCallBlock } from '@deepseek-ai/dsh-llm'
+import type { ToolCallBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { PostToolDecision, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from '../../src/results.ts'
 import { resolvePolicy, type Config } from '../../src/policy.ts'
@@ -48,6 +48,17 @@ const failure = (text: string): ToolExecutionResult => ({
 })
 
 const accept: PostToolDecision = { kind: 'accept' }
+
+/** One `additionalContexts` entry, as a listener or a tool body attaches it. */
+function context(text: string, source: UserMessage['source']): UserMessage {
+  return { id: 'context-1' as UserMessage['id'], role: 'user', content: [{ type: 'text', text }], source }
+}
+
+/** The text of one message's first block, for comparing a source's copy of it. */
+function firstText(message: UserMessage): string | undefined {
+  const block = message.content[0]
+  return block?.type === 'text' ? block.text : undefined
+}
 
 describe('a successful structured result', () => {
   it('is replaced through the value arm, so content and meta are re-derived', async () => {
@@ -176,13 +187,88 @@ describe('composing with the rest of the waterfall', () => {
     expect(decision).toBe(downstream)
   })
 
-  it('carries downstream additionalContexts onto the replacement', async () => {
-    const contexts = [{ content: [{ type: 'text' as const, text: 'note' }], source: { kind: 'plugin' } }]
-    const downstream = { kind: 'accept', value: { note: SLACK }, additionalContexts: contexts } as PostToolDecision
+  it('carries a clean downstream additionalContext onto the replacement by reference', async () => {
+    const contexts = [context('note', { kind: 'plugin', plugin: 'hooks' })]
+    const downstream: PostToolDecision = { kind: 'accept', value: { note: SLACK }, additionalContexts: contexts }
 
     const { decision } = await redactDecision(downstream, success({}, ''), policy, hasher)
 
     expect((decision as { additionalContexts?: unknown }).additionalContexts).toBe(contexts)
+  })
+
+  it('redacts a secret a downstream listener attached as an additionalContext', async () => {
+    const contexts = [context(`hook says ${SLACK}`, { kind: 'plugin', plugin: 'hooks' })]
+    const downstream: PostToolDecision = { kind: 'accept', additionalContexts: contexts }
+
+    const { decision, spans } = await redactDecision(downstream, success({ ok: true }, 'fine'), policy, hasher)
+
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+    expect(JSON.stringify(decision)).toContain('[REDACTED:dsh-dlp:slack-token:')
+    expect(spans.map(span => span.ruleId)).toContain('dsh-dlp/slack-token')
+  })
+
+  it('redacts the source text a context repeats beside its blocks', async () => {
+    // A `snapshot` source repeats the block text in `sections[].text` and a
+    // `notice` source repeats its opening in `summary`; both are appended to
+    // the session log with the message, so redacting the blocks alone leaves
+    // a copy behind.
+    const contexts = [context(`hook says ${SLACK}`, {
+      kind: 'plugin',
+      plugin: 'hooks',
+      form: 'snapshot',
+      sections: [{ name: 'hooks', text: `hook says ${SLACK}` }],
+    })]
+    const downstream: PostToolDecision = { kind: 'accept', additionalContexts: contexts }
+
+    const { decision } = await redactDecision(downstream, success({ ok: true }, 'fine'), policy, hasher)
+    const carried = (decision as { additionalContexts: UserMessage[] }).additionalContexts[0]
+    const source = carried?.source as { kind: string; plugin: string; form: string; sections: { text: string }[] }
+
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+    // The discriminants still say what the message is.
+    expect(source).toMatchObject({ kind: 'plugin', plugin: 'hooks', form: 'snapshot' })
+    // Same text, same scan, same key: the copies stay in step.
+    expect(source.sections[0]?.text).toBe(carried === undefined ? undefined : firstText(carried))
+  })
+
+  it('redacts a context attached to a downstream block decision', async () => {
+    const contexts = [context(SLACK, { kind: 'plugin', plugin: 'hooks' })]
+    const downstream: PostToolDecision = {
+      kind: 'block',
+      feedback: [{ type: 'text', text: 'try again' }],
+      additionalContexts: contexts,
+    }
+
+    const { decision } = await redactDecision(downstream, success({}, ''), policy, hasher)
+
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+  })
+
+  it('withholds a successful result whose deferred context no accept arm can rewrite', async () => {
+    // The registry concatenates `result.additionalContexts` ahead of the
+    // decision's own on every accept arm, so nothing an accept can say drops
+    // or rewrites them. Only a block does, which is `meta`'s case exactly.
+    const result: ToolExecutionResult = {
+      ...success({ ok: true }, 'fine'),
+      additionalContexts: [context(SLACK, { kind: 'plugin', plugin: 'hooks' })],
+    }
+
+    const { decision, spans } = await redactDecision(accept, result, policy, hasher)
+
+    expect(decision.kind).toBe('block')
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+    expect(spans.map(span => span.ruleId)).toContain('dsh-dlp/slack-token')
+  })
+
+  it('keeps a clean deferred context out of the decision entirely', async () => {
+    const result: ToolExecutionResult = {
+      ...success({ ok: true }, 'fine'),
+      additionalContexts: [context('nothing here', { kind: 'plugin', plugin: 'hooks' })],
+    }
+
+    const { decision } = await redactDecision(accept, result, policy, hasher)
+
+    expect(decision).toBe(accept)
   })
 
   it('never produces a decision carrying both value and content', async () => {
