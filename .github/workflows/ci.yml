@@ -116,6 +116,15 @@ jobs:
   alpha:
     name: typecheck against the 0.1.2 prerelease line
     runs-on: ubuntu-latest
+    # An early warning about upstream's next line, not a gate on this one. It
+    # resolves a moving dist-tag against a registry we do not control, so it can
+    # fail for reasons that have nothing to do with this package - pnpm's
+    # minimum-release-age holds back a prerelease published hours earlier, and
+    # the tag then resolves to nothing. A red run here would say "this release
+    # is broken" about code that passes every supported version, which is how a
+    # team learns to ignore red CI.
+    continue-on-error: true
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: corepack enable
@@ -133,7 +142,12 @@ jobs:
       - name: Resolve the harness packages at the alpha dist-tag
         run: |
           set -euo pipefail
-          pnpm add -D "@deepseek-ai/dsh-llm@alpha" "@deepseek-ai/dsh-session@alpha" \
+          # `--config.minimumReleaseAge=0`: pnpm 11 withholds a package published
+          # inside its release-age window, and the whole point of this job is
+          # the newest prerelease. Without it the tag resolves to nothing hours
+          # after upstream publishes, which is exactly when it is worth running.
+          pnpm add -D --config.minimumReleaseAge=0 \
+            "@deepseek-ai/dsh-llm@alpha" "@deepseek-ai/dsh-session@alpha" \
             "@deepseek-ai/dsh-session-telemetry@alpha" "@deepseek-ai/dsh-tools@alpha"
 
       - run: pnpm run typecheck
