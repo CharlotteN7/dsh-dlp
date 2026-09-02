@@ -115,7 +115,6 @@ jobs:
 
   alpha:
     name: typecheck against the 0.1.2 prerelease line
-    runs-on: ubuntu-latest
     # An early warning about upstream's next line, not a gate on this one. It
     # resolves a moving dist-tag against a registry we do not control, so it can
     # fail for reasons that have nothing to do with this package - pnpm's
