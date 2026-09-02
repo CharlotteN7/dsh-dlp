@@ -59,6 +59,15 @@ nothing built from a candidate path or command line can reach the file. An audit
 is reported and swallowed rather than turned into a denial: the sink is evidence, not
 enforcement, and a full disk should not take the agent down.
 
+The file is kept at **mode 0640** — owner read/write, group read, nothing for anyone else. The
+mode is forced with an explicit `chmod` after every append, because `appendFileSync`'s own
+`mode` argument applies only when the call creates the file and is masked by the process umask;
+under an ordinary account's umask the sink was created 0664. Forcing it on every append also
+takes back a loosening applied to an existing file. Nothing in a record is a secret — rule ids,
+keyed hashes, tool names, call identity — but the records are the evidence that a decision
+happened, and a failure to hold the mode is reported on the same two channels as a failed
+write. The redaction key beside it is created 0600, which no umask can widen.
+
 Reported means `process.stderr` **and** `ctx.logger`, for that failure and for an invalid
 policy file. The logger alone is not enough: its default exporter is an in-memory 1000-entry
 ring buffer and no shipped bundle mounts a console exporter, so a message sent only there is

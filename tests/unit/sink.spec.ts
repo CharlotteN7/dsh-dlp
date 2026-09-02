@@ -4,11 +4,11 @@
  * out-of-repo event type makes the next resume refuse the whole session.
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from '../../src/sink.ts'
+import { AUDIT_MODE, AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from '../../src/sink.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-dlp-sink-'))
 afterAll(() => { rmSync(home, { recursive: true, force: true }) })
@@ -89,6 +89,44 @@ describe('the audit sink', () => {
     expect(JSON.stringify(row)).not.toContain('\u001B')
     expect(row['tool']).toBe('[REDACTED:dsh-dlp:control-sequence][REDACTED:dsh-dlp:control-sequence]read')
     expect(Object.keys(row['unicode'] as object)).toEqual(['[REDACTED:dsh-dlp:control-sequence]'])
+  })
+
+  it('creates the sink with its own mode rather than whatever the umask allows', () => {
+    // `appendFileSync`'s `mode` applies only on creation and is masked by the
+    // process umask, so a permissive umask left the file world-readable. The
+    // records hold rule ids and keyed hashes, not secrets, but they are
+    // evidence.
+    const file = join(home, 'mode-on-create.jsonl')
+    const previous = process.umask(0o000)
+    try {
+      new AuditSink(file, () => { throw new Error('unexpected failure') }).write({
+        v: RECORD_VERSION,
+        time: '2026-08-15T00:00:00.000Z',
+        kind: 'guard-deny',
+        decisionId: newDecisionId(),
+      })
+    } finally {
+      process.umask(previous)
+    }
+
+    expect(statSync(file).mode & 0o777).toBe(AUDIT_MODE)
+  })
+
+  it('puts the mode back on a sink something else loosened', () => {
+    const file = join(home, 'mode-restored.jsonl')
+    const sink = new AuditSink(file, () => { throw new Error('unexpected failure') })
+    const record = {
+      v: RECORD_VERSION,
+      time: '2026-08-15T00:00:00.000Z',
+      kind: 'guard-deny' as const,
+      decisionId: newDecisionId(),
+    }
+    sink.write(record)
+    chmodSync(file, 0o666)
+
+    sink.write(record)
+
+    expect(statSync(file).mode & 0o777).toBe(AUDIT_MODE)
   })
 
   it('reports a write failure instead of turning it into a denial', () => {

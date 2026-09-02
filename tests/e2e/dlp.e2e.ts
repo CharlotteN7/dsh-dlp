@@ -189,6 +189,26 @@ describe('dsh-dlp mounted into a real dsh profile', () => {
     expect(JSON.stringify(result.auditRecords)).not.toContain(hidden)
   }, 120_000)
 
+  it('leaves the audit sink readable by its owner and group, and by nobody else', async () => {
+    // The sink is created by `appendFileSync`, whose `mode` applies only on
+    // creation and is masked by the umask, so the file arrived 0664 under the
+    // default umask of an ordinary account. It holds rule ids and keyed
+    // hashes rather than secrets, but it is the evidence that a decision
+    // happened.
+    const result = await runAgent({
+      task: 'read the deploy key',
+      sequence: ['tool_call_success', 'success', 'success'],
+      toolName: 'read',
+      toolArguments: JSON.stringify({ file_path: '{{WORKSPACE}}/.ssh/id_rsa' }),
+      successText: 'I cannot read that file.',
+      seedFiles: { '.ssh/id_rsa': 'PRIVATE-KEY-BODY\n' },
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    expect(result.auditRecords.length).toBeGreaterThan(0)
+    expect(result.auditLogMode).toBe(0o640)
+  }, 120_000)
+
   it('writes an ordinary .gitignore that mentions .env', async () => {
     // The credential table used to run over every string argument, so file
     // content naming `.env` was denied with a message saying the denial could

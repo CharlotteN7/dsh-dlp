@@ -15,7 +15,7 @@
  * @module dsh-dlp/sink
  */
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, chmodSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { stripControlSequences } from './detectors.ts'
 import type { AskUnreachable } from './approval-reach.ts'
@@ -36,6 +36,16 @@ export function newDecisionId(): DecisionId {
 
 /** Payload version carried inside every record this plugin writes. */
 export const RECORD_VERSION = 1
+
+/**
+ * Mode the sink file is kept at.
+ *
+ * The records hold rule ids, keyed hashes, tool names and call identity — no
+ * matched value ever reaches them — but they are the evidence that a decision
+ * happened, so they are readable by the operator's group and never by the
+ * world. This is the mode the sibling packages keep their spools at.
+ */
+export const AUDIT_MODE = 0o640
 
 /** What produced one audit record. */
 export type AuditKind =
@@ -151,12 +161,20 @@ export class AuditSink {
    * evidence, not enforcement, and letting a full disk turn every tool call
    * into a denial trades a confidentiality control for an availability
    * outage. A guard that throws would also skip `tools/post-execute` and so
-   * disable redaction for that call.
+   * disable redaction for that call. A failure to hold
+   * {@link AUDIT_MODE} is reported on the same terms: the record is written
+   * either way, and an operator who cannot see the mode cannot know who else
+   * can read the file.
    * @param record - the decision to record.
    */
   write(record: AuditRecord): void {
     try {
-      appendFileSync(this.#path, `${JSON.stringify(cleaned(record))}\n`)
+      appendFileSync(this.#path, `${JSON.stringify(cleaned(record))}\n`, { mode: AUDIT_MODE })
+      // `appendFileSync`'s `mode` applies only when the call creates the file,
+      // and even then the umask masks it, so the mode is forced afterwards.
+      // Forcing it on every append also takes back a loosening applied to an
+      // existing sink.
+      chmodSync(this.#path, AUDIT_MODE)
     } catch (error: unknown) {
       this.#onFailure(error)
     }

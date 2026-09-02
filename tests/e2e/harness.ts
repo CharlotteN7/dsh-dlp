@@ -138,6 +138,12 @@ export interface AgentRunResult {
   readonly auditRecords: readonly Record<string, unknown>[]
   /** The audit sink's bytes, for a test that runs the `report` command over them. */
   readonly auditLogText: string
+  /**
+   * Permission bits of the audit sink the run created, or `undefined` when the
+   * run recorded nothing. Read before the throwaway home is deleted, because
+   * the mode is only observable while the file exists.
+   */
+  readonly auditLogMode: number | undefined
   /** The persisted session log, one parsed JSONL row per element. */
   readonly sessionLog: readonly Record<string, unknown>[]
   /** Wire requests the agent made, as captured by the mock. */
@@ -161,6 +167,16 @@ function filesUnder(dir: string): string[] {
     const full = join(dir, entry)
     return statSync(full).isDirectory() ? filesUnder(full) : [full]
   })
+}
+
+/** Permission bits of a file, or `undefined` when the run never created it. */
+function fileMode(file: string): number | undefined {
+  try {
+    return statSync(file).mode & 0o777
+  } catch {
+    // ENOENT only: the plugin writes lazily and a run may record nothing.
+    return undefined
+  }
 }
 
 /** Read a file, or the empty string when the run never created it. */
@@ -360,6 +376,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       stderr,
       auditRecords: readJsonl(auditLog),
       auditLogText: readText(auditLog),
+      auditLogMode: fileMode(auditLog),
       sessionLog: logFile === undefined ? [] : readJsonl(logFile),
       modelRequests: [...server.requests],
       home,
