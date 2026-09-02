@@ -17,8 +17,20 @@
 
 import { createHmac } from 'node:crypto'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { severityRank, type Detection, type Severity } from './detectors.ts'
+
+/**
+ * A value that round-trips through JSON without loss.
+ *
+ * Declared here rather than imported. Upstream moved this alias out of
+ * `@deepseek-ai/dsh-session` and into `@deepseek-ai/dsh-util-values` in
+ * `0.1.2-alpha.2`; the new package does not exist in any release the peer
+ * ranges also admit, and a TypeScript import cannot name two homes, so either
+ * import breaks half the supported range. The alias is structural and carries
+ * no runtime, so a local copy is assignable in both directions wherever it
+ * meets upstream's — and nothing outside this package is handed one.
+ */
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 /** One replaced region, described without disclosing what it held. */
 export interface RedactedSpan {

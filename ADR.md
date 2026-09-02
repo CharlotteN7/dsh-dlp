@@ -966,3 +966,30 @@ interpretable — the same discipline as §20 and §22.
 **This is an ecosystem-wide miss, not only ours.** gitleaks on master still carries
 `(?:ghu|ghs)_[0-9a-zA-Z]{36}` for the GitHub App token, which dies at the first underscore for
 exactly the same reason ours did.
+
+## 25. `JsonValue` is declared in this package, not imported
+
+Upstream moved the alias out of `@deepseek-ai/dsh-session` and into a new
+`@deepseek-ai/dsh-util-values` at `0.1.2-alpha.2`: `lib/types/json.d.ts` is gone from
+`dsh-session@0.1.2-alpha.5` and its `types.d.ts` imports `JsonValue` from the new package. Against
+that line the old import is a build failure, `TS2614: Module '"@deepseek-ai/dsh-session"' has no
+exported member 'JsonValue'`, in both `redaction.ts` and `telemetry.ts`.
+
+Neither import works across the range the peer ranges admit. `@deepseek-ai/dsh-util-values` has
+no release before `0.1.2-alpha.2`, so importing from it breaks every rc; importing from
+`@deepseek-ai/dsh-session` breaks the alpha. A type import names one module and TypeScript
+resolves it statically, so there is no conditional form of it.
+
+So the alias is declared here. It is one line, structural, and has no runtime: TypeScript
+compares it structurally, so a local `JsonValue` is mutually assignable with upstream's wherever
+the two meet. They meet nowhere outside this package — it types `redactJson`'s parameter and
+return, and one cast of `SessionTelemetryRecord['body']`, which is `unknown` on the seam.
+
+**Rejected: an optional peer on `@deepseek-ai/dsh-util-values` with a `declare module` fallback.**
+The shim shadows the real module when the package is installed, and the ambient declaration has
+to be written down either way, so it buys a peer dependency and a resolution hazard in exchange
+for the five lines it was meant to save.
+
+The cost is that upstream widening or narrowing the alias no longer reaches us. That drift is
+visible: the `alpha` CI job typechecks and builds this package against the `alpha` dist-tag, which
+is what would have caught the move itself.

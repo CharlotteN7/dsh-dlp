@@ -27,10 +27,16 @@
  */
 
 import type { SessionTelemetryRecord, SessionTelemetrySharingStatus } from '@deepseek-ai/dsh-session-telemetry'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { scanSync, type Detection } from './detectors.ts'
 import type { ResolvedPolicy } from './policy.ts'
-import { placeholderFor, redactJson, redactText, type RedactedSpan, type SpanHasher } from './redaction.ts'
+import {
+  placeholderFor,
+  redactJson,
+  redactText,
+  type JsonValue,
+  type RedactedSpan,
+  type SpanHasher,
+} from './redaction.ts'
 
 /**
  * What to tell the operator when the redaction seam will never dispatch.
