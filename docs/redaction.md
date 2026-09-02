@@ -69,7 +69,9 @@ Two tiers:
   A superseded format stays in the table beside the one that replaced it. Supabase's `sbp_`
   keys are deprecated rather than switched off, so a credential in that format is still live;
   removing the rule would also make every audit record already carrying its id
-  uninterpretable. Cloudflare's pre-2026 tokens go the other way: a bare 40-character
+  uninterpretable. GitHub App installation tokens are the same case one format newer: the
+  stateless `ghs_<app id>_<JWT>` form GitHub rolled out through June 2026 is matched beside the
+  40-character opaque form, which is not revoked and stays valid until it expires. Cloudflare's pre-2026 tokens go the other way: a bare 40-character
   alphanumeric string has no prefix to anchor on, so the legacy format is tier 2's and only the
   `cfut_`/`cfat_`/`cfk_` scannable format is here.
 
