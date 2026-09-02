@@ -910,3 +910,59 @@ one afterwards. It goes to `process.stderr` as well as `ctx.logger` for §7's re
 adds a peer every consumer must install for a read this plugin makes opportunistically and can
 live without — the same reason `sessionTelemetry` and `approval` are already consumed through
 `ctx.get`.
+
+## 24. The GitHub App installation token, and the anchor a JWT rule needs
+
+GitHub's changelog of 2026-04-24 changes installation tokens from a 40-character opaque string
+to `ghs_APPID_JWT`: "~520 characters" carrying two dots, rolled out from 2026-04-27 through late
+June. Existing tokens are not revoked — "Existing App installation tokens continue to work until
+they expire" — so this is §22's situation again, a current format beside a live superseded one.
+
+Measured against the published `0.7.0` build, the whole token was in the clear:
+
+| input | length | reported |
+|---|---|---|
+| opaque `ghs_` format | 40 | `github-token` / critical |
+| `ghs_<app id>_<JWT>` | 911 | *nothing* |
+| the same JWT alone | 900 | `json-web-token` / high |
+
+**The JWT rule did not catch it, and the reason generalises past GitHub.** `\beyJ` is
+`(?<![A-Za-z0-9_])eyJ` — `\b` is defined over word characters, and `_` is one. There is no
+boundary between the `_` closing `ghs_123456_` and the `e` of `eyJ`, so a JWT behind any
+`prefix_` was invisible: not this token only, but every secret whose JWT is preceded by an
+underscore, a letter or a digit.
+
+**The GitHub rule anchors on the JWT, not on GitHub's suggested character class.** The changelog
+offers `ghs_[A-Za-z0-9.\-_]{36,}`. On a floor rule a false positive is a denial rather than a
+redaction, and that class matches an ordinary dotted file name —
+`ghs_report-2026-04-24.summary-eu-west-1.json` is 40 characters past the prefix, and denying a
+call for carrying it would stop work with no leak behind it. The stateless alternative instead
+requires what the changelog describes: the prefix, an app id, an underscore, and a compact JWT
+whose first two segments open `eyJ`. It is first in the alternation, because the opaque
+alternative would otherwise claim the `ghs_` prefix and stop at the app id.
+
+The cost of anchoring that tightly is stated rather than assumed: if GitHub ships a variant whose
+second field is not a compact JWT, this rule misses it. The fixed JWT rule then matches at
+`high`, which is `DENY_SEVERITY`, so the floor still denies — with a less specific attribution.
+That layering is why the specificity is affordable, and it is asserted: the two rules report over
+one token in table order, so the merged span keeps the critical GitHub attribution.
+
+**Both anchors move from word characters to the base64url alphabet, and both widen.** A JWT
+segment is drawn from `[A-Za-z0-9_-]`, so a letter or digit before `eyJ` means the match would
+start inside a longer token and the rule refuses it. `_` and `-` are base64url characters too,
+but they are separators far more often, so they are allowed — which is what makes the token
+behind `ghs_123456_` visible. The end anchor moves the same way, because `\b` trimmed a
+signature's trailing `-` off the reported span. Both new anchors admit a strict superset of what
+`\b` admitted, so nothing that was detected stopped being detected.
+
+**Mid-token matching is the risk in that widening, and it is tested rather than argued.** Four
+more base64url characters in front of the JWT are refused. The structural reason the widening is
+safe is that this pattern requires two literal dots and `.` is not in the base64url alphabet, so
+the longer run a mid-token match would have to sit inside cannot be a plain base64url blob.
+
+Both rules move to `version: 2` and keep their ids, so every audit record already written stays
+interpretable — the same discipline as §20 and §22.
+
+**This is an ecosystem-wide miss, not only ours.** gitleaks on master still carries
+`(?:ghu|ghs)_[0-9a-zA-Z]{36}` for the GitHub App token, which dies at the first underscore for
+exactly the same reason ours did.

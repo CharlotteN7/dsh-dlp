@@ -93,7 +93,23 @@ export interface SyncRule {
 export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/aws-access-key-id', version: 1, severity: 'critical', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/g },
   { id: 'dsh-dlp/aws-secret-access-key', version: 1, severity: 'critical', pattern: /\baws_secret_access_key\b\s*[=:]\s*["']?[A-Za-z0-9/+=]{40}["']?/gi },
-  { id: 'dsh-dlp/github-token', version: 1, severity: 'critical', pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{36,251}|github_pat_[A-Za-z0-9_]{22,251})\b/g },
+  // Three formats, and the stateless one is first because the opaque
+  // alternative would otherwise claim its `ghs_` prefix and stop at the app
+  // id. GitHub's 2026-04-24 changelog gives the shape as `ghs_APPID_JWT`,
+  // "~520 characters" carrying two dots, rolled out from 2026-04-27 to late
+  // June; the opaque 40-character format stays because existing tokens
+  // "continue to work until they expire". GitHub's own suggested
+  // `ghs_[A-Za-z0-9.\-_]{36,}` is deliberately not what this uses: on a floor
+  // rule a false positive is a denial, and that class matches an ordinary
+  // dotted file name — `ghs_report-2026-04-24.summary-eu-west-1.json` is 40
+  // characters past the prefix. Anchoring on the JWT the changelog describes
+  // costs nothing a real token has.
+  {
+    id: 'dsh-dlp/github-token',
+    version: 2,
+    severity: 'critical',
+    pattern: /\b(?:ghs_[A-Za-z0-9]{1,32}_eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])|gh[pousr]_[A-Za-z0-9]{36,251}\b|github_pat_[A-Za-z0-9_]{22,251}\b)/g,
+  },
   { id: 'dsh-dlp/slack-token', version: 1, severity: 'critical', pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}/g },
   { id: 'dsh-dlp/stripe-secret-key', version: 1, severity: 'critical', pattern: /\b[sr]k_live_[A-Za-z0-9]{16,}\b/g },
   { id: 'dsh-dlp/anthropic-api-key', version: 1, severity: 'critical', pattern: /\bsk-ant-[A-Za-z0-9_-]{20,}/g },
@@ -137,7 +153,19 @@ export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/cloudflare-api-token', version: 1, severity: 'critical', pattern: /\bcf(?:ut|at|k)_[A-Za-z0-9_-]{40,}/g },
   { id: 'dsh-dlp/notion-token', version: 1, severity: 'critical', pattern: /\bntn_[A-Za-z0-9]{40,}/g },
   { id: 'dsh-dlp/private-key-block', version: 1, severity: 'critical', pattern: /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )*PRIVATE KEY-----/g },
-  { id: 'dsh-dlp/json-web-token', version: 1, severity: 'high', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
+  // Anchored on the base64url alphabet rather than on word characters. `\b`
+  // was wrong in both directions: `_` is a word character, so a JWT behind any
+  // `prefix_` was invisible, and a signature's trailing `-` was trimmed off the
+  // reported span. A letter or digit before `eyJ` still refuses, which is what
+  // keeps a match from starting in the middle of a longer token; `_` and `-`
+  // are base64url characters but are separators far more often, and the two
+  // literal dots this pattern requires are in no base64url run.
+  {
+    id: 'dsh-dlp/json-web-token',
+    version: 2,
+    severity: 'high',
+    pattern: /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])/g,
+  },
   { id: 'dsh-dlp/credential-url', version: 1, severity: 'high', pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@[^\s/]+/gi },
   // Webhook URLs are bearer credentials whose path segment is the secret. They
   // are in tier 1 rather than left to secretlint because the telemetry seam is

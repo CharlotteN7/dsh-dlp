@@ -20,6 +20,20 @@ const SHOPIFY = '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'
 /** AWS's own published example access key id, which their scanners treat as fake. */
 const AWS_EXAMPLE_KEY_ID = 'AKIAIOSFODNN7EXAMPLE'
 
+/**
+ * A JWT of the length GitHub's stateless installation tokens carry, assembled
+ * from repeated characters rather than written out. Invented for this test,
+ * never a live credential.
+ */
+const STATELESS_JWT = `eyJ${'h'.repeat(29)}.eyJ${'z'.repeat(120)}.${'S'.repeat(342)}`
+
+/** The same JWT behind the `ghs_<app id>_` prefix, which is the whole token. */
+const GITHUB_STATELESS_TOKEN = `ghs_123456_${STATELESS_JWT}`
+
+/** The two tier-1 rules driven alone below, where a scan of the whole table would say less. */
+const GITHUB_RULE = SYNC_RULES.filter(rule => rule.id === 'dsh-dlp/github-token')
+const JWT_RULE = SYNC_RULES.filter(rule => rule.id === 'dsh-dlp/json-web-token')
+
 describe('the synchronous rule table', () => {
   it('finds a Slack bot token and reports where it sits', () => {
     const { detections } = scanSync(`token is ${SLACK} ok`)
@@ -99,6 +113,37 @@ describe('the synchronous rule table', () => {
     expect(scanSync(`pk_live_${'5'.repeat(24)}`).detections).toEqual([])
   })
 
+  // GitHub's 2026-04-24 changelog: installation tokens keep the `ghs_` prefix
+  // and become `ghs_APPID_JWT`, "~520 characters" carrying two dots. The old
+  // 40-character opaque format is not retired — the changelog says existing
+  // tokens "continue to work until they expire" — so both are asserted here.
+  it('finds a GitHub App installation token in the stateless format issued today', () => {
+    const framed = `GITHUB_TOKEN=${GITHUB_STATELESS_TOKEN}`
+
+    const { detections } = scanSync(framed, GITHUB_RULE)
+
+    expect(detections).toHaveLength(1)
+    expect(detections[0]?.ruleId).toBe('dsh-dlp/github-token')
+    expect(detections[0]?.severity).toBe('critical')
+    expect(framed.slice(detections[0]?.start, detections[0]?.end)).toBe(GITHUB_STATELESS_TOKEN)
+  })
+
+  it('reports the GitHub rule ahead of the JWT fallback the same token also trips', () => {
+    // Two layers over one token, and the order is what the audit record keeps:
+    // overlapping spans merge into the rule the table reached first, so the
+    // critical GitHub attribution wins over the high JWT one.
+    expect(scanSync(GITHUB_STATELESS_TOKEN).detections.map(detection => detection.ruleId))
+      .toEqual(['dsh-dlp/github-token', 'dsh-dlp/json-web-token'])
+  })
+
+  it('still finds the opaque installation format, which expires rather than being revoked', () => {
+    expect(scanSync(`ghs_${'A'.repeat(36)}`).detections[0]?.ruleId).toBe('dsh-dlp/github-token')
+  })
+
+  it('leaves a ghs_-prefixed identifier carrying no JWT alone', () => {
+    expect(scanSync(`ghs_123456_${'A'.repeat(60)}`).detections).toEqual([])
+  })
+
   it('orders two matches that start together by where they end', () => {
     const rules = [
       { id: 'test/long', version: 1, severity: 'high' as const, pattern: /ABC/g },
@@ -115,6 +160,35 @@ describe('the synchronous rule table', () => {
     const second = scanSync(SLACK).detections
 
     expect(second).toEqual(first)
+  })
+})
+
+describe('the JSON Web Token rule', () => {
+  it('finds a JWT that a word character runs straight into', () => {
+    // `\b` cannot express "a JWT starts here": there is no boundary between the
+    // `_` closing a prefix and the `e` of `eyJ`, so the token GitHub now issues
+    // passed both this rule and the GitHub one in the clear.
+    const { detections } = scanSync(GITHUB_STATELESS_TOKEN, JWT_RULE)
+
+    expect(detections).toHaveLength(1)
+    expect(GITHUB_STATELESS_TOKEN.slice(detections[0]?.start, detections[0]?.end)).toBe(STATELESS_JWT)
+  })
+
+  it('does not start a match inside a longer base64url run', () => {
+    // Four more base64url characters in front of the JWT make the first segment
+    // part of some longer token; a match starting at the inner `eyJ` would
+    // report offsets that cut that token in half.
+    expect(scanSync(`QUFB${STATELESS_JWT}`, JWT_RULE).detections).toEqual([])
+  })
+
+  it('covers a signature ending in a base64url dash', () => {
+    const jwt = `eyJ${'h'.repeat(29)}.eyJ${'z'.repeat(29)}.${'S'.repeat(20)}-`
+    const framed = `Authorization: Bearer ${jwt} (expired)`
+
+    const { detections } = scanSync(framed, JWT_RULE)
+
+    expect(detections).toHaveLength(1)
+    expect(framed.slice(detections[0]?.start, detections[0]?.end)).toBe(jwt)
   })
 })
 
