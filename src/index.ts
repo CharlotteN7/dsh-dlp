@@ -419,6 +419,11 @@ export function apply(ctx: Context, config: Config): void {
         })
       }
       return redacted.record
-    })
+      // Prepended for the reason the other two seams are: a listener that
+      // returns without calling `next()` deletes every listener behind it, and
+      // this one is the only thing standing between an exported telemetry
+      // record and the wire. Best-effort, as at the mutation snapshot: another
+      // plugin registering later with the same option lands ahead again.
+    }, { prepend: true })
   }
 }

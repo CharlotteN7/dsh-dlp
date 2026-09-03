@@ -1067,6 +1067,14 @@ describe('the mutation check at the guard', () => {
     expect(mount().options.get('tools/post-execute')?.[0]).toMatchObject({ prepend: true })
   })
 
+  // The telemetry seam is fail-closed by design and is the only thing between an
+  // exported record and the wire, so a listener ahead of ours that never calls
+  // `next()` would export in the clear. A shipped competitor prepends on this
+  // same seam; co-mounted without this, it would sit outermost.
+  it('registers telemetry redaction ahead of the listeners already on that waterfall', () => {
+    expect(mount().options.get('session-telemetry/record')?.[0]).toMatchObject({ prepend: true })
+  })
+
   it('treats a deny or an ask from another listener as ordinary traffic', async () => {
     const plugin = mount()
     const snapshot = plugin.listeners.get('tools/pre-execute')?.[0] as
