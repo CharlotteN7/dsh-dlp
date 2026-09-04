@@ -110,6 +110,13 @@ export interface AgentRunOptions {
   readonly successText?: string
   /** Files written under the throwaway workspace before boot, keyed by path relative to it. */
   readonly seedFiles?: Readonly<Record<string, string>>
+  /**
+   * Start the agent process in the throwaway workspace rather than beside the
+   * `dsh` entry point. The session records its cwd from here, which is what
+   * decides whether workspace-scoped context providers — the `AGENTS.md` chain
+   * above all — see the seeded files at all.
+   */
+  readonly cwdIsWorkspace?: true
   /** Extra rows appended to the profile's own patch layer. */
   readonly extraProfilePatch?: string
   /**
@@ -375,6 +382,14 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       DSH_PERMISSION_MODE: 'danger-full-access',
       DEEPSEEK_API_KEY: 'mock-key',
       DEEPSEEK_BASE_URL: server.baseURL,
+      // Starting the process in the throwaway workspace moves `tsx` off the
+      // harness checkout's own tsconfig, and with it the path mappings that
+      // resolve `@deepseek-ai/*` to the checkout's sources. Naming the file
+      // explicitly restores them; the installed-CLI mode has no mappings to
+      // lose and ignores it.
+      ...options.cwdIsWorkspace === true && DSH_CLI === undefined
+        ? { TSX_TSCONFIG_PATH: join(DSH_REPO, 'tsconfig.json') }
+        : {},
       ...options.env,
     }
     for (const [name, value] of Object.entries(env)) {
@@ -386,7 +401,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       '--profile', 'e2e',
       substitute(options.task),
     ], {
-      cwd: DSH_CWD,
+      cwd: options.cwdIsWorkspace === true ? workspace : DSH_CWD,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     })

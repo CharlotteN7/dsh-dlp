@@ -20,6 +20,8 @@ const config: Config = {
   breadthTier: true,
   resultRedaction: true,
   telemetryRedaction: true,
+  stepContextRedaction: true,
+  claimedInputRedaction: true,
   remoteImageNeutralization: true,
   redactTelemetryWorkspacePaths: true,
   configWriteAsk: true,

@@ -82,6 +82,92 @@ Two consequences worth knowing:
 Replacement runs before the `tool/result` session event is appended, so the durable log records
 the redacted copy.
 
+## Context spliced into a step
+
+A tool result is not the only text that reaches the model. The agent loop dispatches
+`agent/pre-step` as a waterfall and appends whatever `messages` it returns to the session log
+one by one, then derives the next request from the log — so a listener on that waterfall adds
+model-visible, durably logged text without any tool call happening. Several shipped packages
+do exactly that:
+
+| Package | What it splices in |
+|---|---|
+| `@deepseek-ai/dsh-agent-instructions` | the workspace `AGENTS.md` / `CLAUDE.md` chain |
+| `@deepseek-ai/dsh-tmux-context` | captured terminal pane text |
+| `@deepseek-ai/dsh-hooks-claude-code`, `@deepseek-ai/dsh-hooks-codex` | a hook command's `additionalContext` |
+| `@deepseek-ai/dsh-tool-skill` | the skill body a `/name` token asked for |
+
+None of that passes `tools/post-execute`. A `.env` value pasted into a repository's `AGENTS.md`,
+or a Tags-block instruction hidden in one, reached the provider and the durable log in the
+clear. `stepContextRedaction` scans the same text with the same two tiers and the same
+invisible-character classes as a tool result, and replaces it with the same placeholder.
+
+The listener registers with `{ prepend: true }` for the reason the result and telemetry seams
+do, and carries the same limit: a listener registering later with the same option lands ahead
+of it again.
+
+## Input the loop claimed from the inbox
+
+The spliced context is only half of what enters a step. The other half is what the loop claimed
+from the inbox, and most of that is not the user typing either:
+
+| Package | What it puts in the inbox, and how | `source.kind` |
+|---|---|---|
+| `@deepseek-ai/dsh-webhook` | a verified third party's delivery payload, with `agent.followup()` | `webhook` |
+| `@deepseek-ai/dsh-subagent` | an agent-to-agent relay and a settled subagent result, with `steer()`, `followup()` and `inject()` | `agent-message`, `subagent-settled` |
+| `@deepseek-ai/dsh-goal-round-driver` | each goal round's prompt, with `followup()` and an inbox prepend | `goal` |
+| any plugin calling `agent.inject()`, `steer()` or `followup()` | model-facing context of its own | that plugin's own kind |
+
+A `UserMessage` a tool result carries as an `additionalContext` also travels through the inbox,
+so it passes this seam on its way to the step; the `tools/post-execute` pass above already
+redacts the ones it can reach, and this one covers the same text at the claim. Context a
+listener splices straight into the pre-step decision — the instruction chain, the skill catalog,
+a `/name` skill body — never enters the inbox at all and belongs to `stepContextRedaction`.
+
+The webhook case is the one this exists for: the payload is attacker-supplied text carrying
+whatever a hidden-instruction run or a leaked credential rides in on, and it reaches the model
+with no tool call and no waterfall splice. `claimedInputRedaction` scans it with the same two
+tiers, the same invisible-character classes and the same placeholder as everything else here.
+
+**The user's own typing is exempt, and it is the only exemption.** A message whose
+`source.kind` is `user` is passed through untouched: a secret a person deliberately types into
+their own prompt is not a leak this plugin intercepts. That value is what every interactive
+entry point supplies — a CLI task, an ACP prompt, an SDK prompt, and a browser prompt, whose
+source adds `rpcId` beside the same `kind`. `MessageSourceMap` is merge-extensible, so the rule
+is one allowed value rather than a list of denied ones: a source kind from a package this
+plugin has never heard of is scanned rather than trusted. Two producers borrow `kind: 'user'`
+for a subagent's opening prompt, which the parent model composed; those stay exempt, and ADR §30
+says why guessing a finer discriminant would be worse.
+
+### What the durable log holds
+
+Redaction runs at the claim, inside `agent/pre-step`. The loop then appends every message the
+decision carries as a `user/message` event, and that event is the surface the request is
+derived from — so the model-visible durable copy is the redacted one, exactly as for a tool
+result.
+
+The delivery record is a different event and keeps the original. `agent/inbox/spliced` commits
+when the message enters the inbox, before any seam runs, and no plugin can rewrite a committed
+event. It is not one of the three surface event types, so it derives no model message and no
+request is built from it. **That asymmetry is chosen, not tolerated**: for a webhook payload the
+operator investigating an incident needs to read what a third party actually delivered, and this
+plugin is read-side with respect to the session log, so the delivery record is the only durable
+place that account survives.
+
+Two consequences of redacting at the claim rather than at delivery:
+
+- a resumed session rebuilds pending inbox state from the delivery records, so a delivery that
+  was never claimed comes back with its original text — and is redacted again when it is
+  claimed;
+- the web client's queue view is fed from `agent/inbox/spliced`, so a delivery still waiting in
+  the queue is shown unredacted until the loop claims it.
+
+Both passes drive one listener, which registers when either toggle is on, and the scan is joint
+across every in-scope message, so a secret split between a delivered payload and a workspace
+instruction file is found. The exempt prompt is not part of the joined rendering. The audit
+record names the source kinds a pass covered in `claimedSources`, present only when the pass
+covered claimed input.
+
 ## Detection
 
 Two tiers:

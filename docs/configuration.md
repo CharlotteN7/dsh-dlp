@@ -20,6 +20,8 @@ nav_order: 3
     breadthTier: true
     resultRedaction: true
     telemetryRedaction: true
+    stepContextRedaction: true
+    claimedInputRedaction: true
     remoteImageNeutralization: true
     redactTelemetryWorkspacePaths: true
     configWriteAsk: true
@@ -53,7 +55,7 @@ addCredentialPaths:
 addEgressTools: [acme_publish]
 raiseSeverity:
   dsh-dlp/secret-assignment: high
-enable: [telemetryRedaction, configWriteAsk, approvalSuppressionAsk]
+enable: [telemetryRedaction, claimedInputRedaction, configWriteAsk, approvalSuppressionAsk]
 ```
 
 Any other key, and any downgrade, makes the **whole file invalid**: it is reported on

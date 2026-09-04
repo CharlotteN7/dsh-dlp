@@ -12,24 +12,34 @@ built as an out-of-repo plugin.
    following symlinks first.
 2. **Redacts secrets out of tool results** before the model reads them and before the session log
    records them, withholding a result it cannot clean.
-3. **Redacts secrets out of exported telemetry**, closing a hole where `DSH_TELEMETRY_MODE=FULL`
+3. **Redacts secrets out of the messages a step enters with** — the context a listener splices
+   in (the workspace `AGENTS.md`/`CLAUDE.md` chain, a captured tmux pane, a hook's
+   `additionalContext`, a skill body a `/name` token loaded) and the input the loop claimed from
+   the inbox that the user did not type (a `dsh-webhook` delivery's third-party payload, a
+   settled subagent result, an agent relay). All of it reaches the model and the durable log
+   through `agent/pre-step` without ever being a tool result. A message whose `source.kind` is
+   `user` is exempt: a secret a person deliberately types into their own prompt is not a leak
+   this plugin intercepts. The `agent/inbox/spliced` delivery record keeps a delivery's original
+   text, which is deliberate — it derives no model message, and an operator investigating a
+   webhook incident needs to read what was actually delivered.
+4. **Redacts secrets out of exported telemetry**, closing a hole where `DSH_TELEMETRY_MODE=FULL`
    ships message text, tool arguments, results and workspace paths in the clear.
-4. **Strips invisible characters that carry hidden instructions** — the Tags block, bidi
+5. **Strips invisible characters that carry hidden instructions** — the Tags block, bidi
    overrides, runs of variation selectors — and strips terminal control sequences from the audit
    lane so a tool result cannot forge its own audit record.
-5. **Neutralises remote markdown images in assistant output** and detects a tool call another
+6. **Neutralises remote markdown images in assistant output** and detects a tool call another
    plugin rewrote after the session log recorded it.
-6. **Asks before the agent writes a file that changes future behaviour** — agent settings and
+7. **Asks before the agent writes a file that changes future behaviour** — agent settings and
    hooks, `CLAUDE.md`, `.claude/rules/**` and the other agent rules directories, prompt
    templates, `.vscode/tasks.json`, `.mcp.json`, git hooks, CI workflows, shell startup files,
    `pnpm-workspace.yaml` — and before it writes a `*_BASE_URL` that would redirect a provider
    credential.
-7. **Asks before a call switches off its own confirmation** — `non_interactive: true`,
+8. **Asks before a call switches off its own confirmation** — `non_interactive: true`,
    `approval_mode: auto`, an `apply` whose approval is still pending. Both `ask` tiers are
    prompts rather than controls: they live at `tools/pre-execute`, they can be neutralised, and
    they abstain wherever the approval seam prompts nobody — which includes every install under
    `DSH_PERMISSION_MODE=danger-full-access` and a stock headless install under any mode.
-8. **Writes an audit record for every decision.** A redaction or denial names the rule, its
+9. **Writes an audit record for every decision.** A redaction or denial names the rule, its
    version, the offsets and a keyed hash; the three kinds with no matched region to describe —
    an ask, a rewritten call, a neutralised image — carry a rule id, the changed field names or
    the destination hostname instead. Never the secret, never the path or command that matched.
@@ -98,6 +108,8 @@ load.
     breadthTier: true
     resultRedaction: true
     telemetryRedaction: true
+    stepContextRedaction: true
+    claimedInputRedaction: true
     configWriteAsk: true
     approvalSuppressionAsk: true
 ```

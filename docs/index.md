@@ -57,8 +57,17 @@ More limits worth stating up front:
   image destinations are neutralised — see below.) That is not the whole rule, though: `agent/pre-step` is an async waterfall
   returning `{ kind: 'enter'; messages }`, and the only production append of `user/message`
   happens *after* it, so a message arriving from outside can still be rewritten before it is
-  logged or presented. This release does not do that; it is recorded here because the earlier
-  flat claim that outbound redaction is impossible was too strong.
+  logged or presented. `stepContextRedaction` does exactly that for the messages the waterfall
+  itself added — the workspace instruction chain, a captured tmux pane, a hook's
+  `additionalContext`, a `/name` skill body — and `claimedInputRedaction` for the messages the
+  loop claimed from the inbox that the user did not type, above all a `dsh-webhook` delivery's
+  third-party payload. **A secret the user types into their own prompt still reaches the
+  provider**, and that is the one deliberate exemption. A claimed message's earlier
+  `agent/inbox/spliced` delivery record also keeps its original text: that event is not one of
+  the three surface event types, so it derives no model message, and keeping a third party's
+  delivery there verbatim is what an incident investigation needs. The web client's queue view
+  reads that record, so a delivery still waiting in the queue is displayed unredacted until the
+  loop claims it.
 - **A redacted value is not restored when the agent runs a command.** `ctx.shellEnv` rebuilds a
   trusted `DSH_*` namespace for every model shell call, which is a way to hand `bash` and
   `pwsh` — and only those two — the real value behind a placeholder without the model ever

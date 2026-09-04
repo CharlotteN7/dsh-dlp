@@ -55,6 +55,7 @@ export type AuditKind =
   | 'pre-execute-ask-abstained'
   | 'execution-mutation'
   | 'result-redaction'
+  | 'step-context-redaction'
   | 'telemetry-redaction'
   | 'assistant-image-neutralized'
   | 'audit-failure'
@@ -103,6 +104,14 @@ export interface AuditRecord {
    * operator needs to change to get the prompt back.
    */
   readonly askUnreachable?: AskUnreachable
+  /**
+   * The distinct `source.kind` of the inbox-claimed messages a
+   * `step-context-redaction` pass covered, present only when it covered any.
+   * A kind names the producer that delivered the text — `webhook` for a
+   * `dsh-webhook` delivery — which is what separates a redacted third-party
+   * payload from a redacted workspace instruction file.
+   */
+  readonly claimedSources?: readonly string[]
   /** Telemetry record channel, for `telemetry-redaction`. */
   readonly channel?: string
   /** Fields another plugin rewrote after the call was logged, for `execution-mutation`. */

@@ -1,7 +1,7 @@
 /**
  * `dsh-dlp` — data-loss prevention for DeepSeek Harness.
  *
- * Six registrations, in descending order of how much they can be trusted:
+ * Seven registrations, in descending order of how much they can be trusted:
  *
  * 1. `ctx.tools.guard()` — an unconditional, non-configurable deny floor for
  *    credential paths named in a path-typed argument and for secrets heading
@@ -19,6 +19,17 @@
  *    a result that cannot be cleaned is withheld rather than accepted.
  *    Prepended, so it redacts what the rest of the waterfall returned; a
  *    listener registering later with the same option still runs ahead of it.
+ * 3b. `agent/pre-step` — redaction of the messages one step enters with: the
+ *    context a listener splices in (the workspace instruction chain, the
+ *    session skill catalog, a captured terminal pane, a hook's
+ *    `additionalContext`) and the input the loop claimed from the inbox that
+ *    the user did not type (a `dsh-webhook` delivery, a subagent's settled
+ *    result, an agent relay). The loop appends what this waterfall returns as
+ *    the `user/message` surface events every request is derived from, so the
+ *    model-visible durable copy is the redacted one. A claimed message's
+ *    earlier `agent/inbox/spliced` delivery record keeps the original; it
+ *    derives no model message, and ADR §30 says why that is the wanted
+ *    asymmetry. `source.kind: 'user'` is exempt.
  * 4. `session-telemetry/record` — fail-closed redaction of exported telemetry,
  *    reaching tier 1 only because the waterfall is synchronous.
  * 5. `llm/stream` — neutralising remote markdown image destinations in
@@ -53,6 +64,7 @@ import { evaluateConfigWrite } from './config-writes.ts'
 import { evaluateApprovalSuppression } from './approvals.ts'
 import { approvalSeamNotice, askReach, type AskUnreachable } from './approval-reach.ts'
 import { breadthTierDenial, evaluateBreadthTier, redactDecision } from './results.ts'
+import { redactStepContext } from './steps.ts'
 import { redactRecord, telemetrySeamNotice } from './telemetry.ts'
 import { AuditSink, CallCorrelator, newDecisionId, RECORD_VERSION } from './sink.ts'
 
@@ -381,6 +393,44 @@ export function apply(ctx: Context, config: Config): void {
     }, { prepend: true })
   }
 
+  if (policy.stepContextRedaction || policy.claimedInputRedaction) {
+    // One listener for both toggles: they cover two classes of message
+    // entering the same waterfall, and scanning them in one pass is what finds
+    // a secret split across the boundary between them. `redactStepContext`
+    // reads both flags and leaves an out-of-scope message as the object it
+    // arrived as.
+    //
+    // Prepended for the reason the result and telemetry seams are: listeners
+    // run outermost-first, so registering ahead of the chain is what lets this
+    // one redact the messages the rest of the waterfall spliced in rather than
+    // have its own replacement discarded afterwards.
+    ctx.on('agent/pre-step', async (payload, next) => {
+      const redacted = await redactStepContext(await next(), payload.messages, policy, hasher)
+      const indicators = Object.keys(redacted.indicators).length > 0
+        ? { unicode: redacted.indicators }
+        : {}
+      if (redacted.spans.length > 0 || redacted.truncatedScan || Object.keys(indicators).length > 0) {
+        sink.write({
+          v: RECORD_VERSION,
+          time: new Date().toISOString(),
+          kind: 'step-context-redaction',
+          decisionId: newDecisionId(),
+          sessionId: String(payload.agent.session.id),
+          turn: payload.turn,
+          step: payload.step,
+          spans: redacted.spans,
+          ...redacted.truncatedScan ? { truncatedScan: true } : {},
+          ...indicators,
+          // Only when the pass covered claimed input: an operator counting
+          // deliveries must not have to read an empty list as "none arrived"
+          // on every workspace-instruction record.
+          ...redacted.claimedSources.length > 0 ? { claimedSources: redacted.claimedSources } : {},
+        })
+      }
+      return redacted.decision
+    }, { prepend: true })
+  }
+
   if (policy.remoteImageNeutralization) {
     ctx.on('llm/stream', (options: GenerateOptions, next: () => AsyncIterable<StreamChunk>) =>
       neutralizeImageStream(next(), (host) => {
@@ -419,11 +469,15 @@ export function apply(ctx: Context, config: Config): void {
         })
       }
       return redacted.record
-      // Prepended for the reason the other two seams are: a listener that
-      // returns without calling `next()` deletes every listener behind it, and
+      // Prepended for the reason the other seams are: a listener that returns
+      // without calling `next()` vetoes every listener behind it for that
+      // dispatch — `Events.dispatch()` hands the waterfall a fresh array, so
+      // the registration survives and runs again on the next dispatch — and
       // this one is the only thing standing between an exported telemetry
-      // record and the wire. Best-effort, as at the mutation snapshot: another
-      // plugin registering later with the same option lands ahead again.
+      // record and the wire. One vetoed dispatch is one record exported in the
+      // clear, which is why position matters here. Best-effort, as at the
+      // mutation snapshot: another plugin registering later with the same
+      // option lands ahead again.
     }, { prepend: true })
   }
 }

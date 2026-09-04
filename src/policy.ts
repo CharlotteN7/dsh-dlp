@@ -40,6 +40,21 @@ export interface Config {
   resultRedaction: boolean
   /** Whether `session-telemetry/record` redaction runs. */
   telemetryRedaction: boolean
+  /**
+   * Whether the context an `agent/pre-step` listener splices into a step —
+   * the workspace instruction chain, captured terminal panes, a hook's
+   * `additionalContext`, a skill body a `/name` token asked for — is redacted
+   * before the loop logs it and builds the next request from it.
+   */
+  stepContextRedaction: boolean
+  /**
+   * Whether the messages the loop claimed from the inbox are redacted before
+   * the step logs them and builds its request from them, for every message the
+   * user did not type: a `dsh-webhook` delivery's third-party payload, a
+   * subagent's settled result, an agent-to-agent relay, anything
+   * `agent.inject()` seeded. A message whose `source.kind` is `user` is exempt.
+   */
+  claimedInputRedaction: boolean
   /** Whether remote markdown image destinations are neutralised in assistant output. */
   remoteImageNeutralization: boolean
   /** Whether telemetry's `session.cwd` attribute is replaced with a keyed hash. */
@@ -66,6 +81,8 @@ export const Config: z<Config> = z.object({
   breadthTier: z.boolean().default(true),
   resultRedaction: z.boolean().default(true),
   telemetryRedaction: z.boolean().default(true),
+  stepContextRedaction: z.boolean().default(true),
+  claimedInputRedaction: z.boolean().default(true),
   remoteImageNeutralization: z.boolean().default(true),
   redactTelemetryWorkspacePaths: z.boolean().default(true),
   configWriteAsk: z.boolean().default(true),
@@ -77,6 +94,8 @@ const ENABLEABLE = [
   'breadthTier',
   'resultRedaction',
   'telemetryRedaction',
+  'stepContextRedaction',
+  'claimedInputRedaction',
   'remoteImageNeutralization',
   'redactTelemetryWorkspacePaths',
   'configWriteAsk',
@@ -109,6 +128,8 @@ export interface ResolvedPolicy {
   readonly breadthTier: boolean
   readonly resultRedaction: boolean
   readonly telemetryRedaction: boolean
+  readonly stepContextRedaction: boolean
+  readonly claimedInputRedaction: boolean
   readonly remoteImageNeutralization: boolean
   readonly redactTelemetryWorkspacePaths: boolean
   readonly configWriteAsk: boolean
@@ -375,6 +396,8 @@ export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy
     breadthTier: enabled('breadthTier'),
     resultRedaction: enabled('resultRedaction'),
     telemetryRedaction: enabled('telemetryRedaction'),
+    stepContextRedaction: enabled('stepContextRedaction'),
+    claimedInputRedaction: enabled('claimedInputRedaction'),
     remoteImageNeutralization: enabled('remoteImageNeutralization'),
     redactTelemetryWorkspacePaths: enabled('redactTelemetryWorkspacePaths'),
     configWriteAsk: enabled('configWriteAsk'),

@@ -39,7 +39,8 @@ its own identity.
 ```
 
 `kind` is one of `guard-deny`, `pre-execute-deny`, `pre-execute-ask`, `pre-execute-ask-abstained`,
-`execution-mutation`, `result-redaction`, `telemetry-redaction`, `assistant-image-neutralized`. A
+`execution-mutation`, `result-redaction`, `step-context-redaction`, `telemetry-redaction`,
+`assistant-image-neutralized`. A
 `pre-execute-ask` record carries a top-level `ruleId` instead of `spans`: the finding is that a
 path names a behaviour-changing file, not that any region of it matched. A
 `pre-execute-ask-abstained` record carries the same `ruleId` plus `askUnreachable` — one of
@@ -50,7 +51,14 @@ counted as a prompt that happened. An `execution-mutation` record carries
 `mutatedFields` and, when a tool substitution happened, the `originalTool` the log recorded. An
 `assistant-image-neutralized` record carries `host` — the hostname of the blocked destination
 and nothing else from the URL.
-A `result-redaction` record may also carry `unicode`, a count of invisible-character runs per
+A `step-context-redaction` record names the session, turn and step rather than a call: nothing
+dispatched, so there is no `callId` or tool name to carry. It carries `claimedSources` when the
+pass covered input the loop claimed from the inbox — the distinct `source.kind` values it
+rewrote, `["webhook"]` for a `dsh-webhook` delivery — and omits the field entirely when the pass
+only covered context a listener spliced in, so an empty list never has to be read as "no
+delivery arrived".
+
+A `result-redaction` or `step-context-redaction` record may also carry `unicode`, a count of invisible-character runs per
 class — counts only, because a hidden instruction is exactly the content this file must not
 repeat. A record is written whenever there is something to say, including a result that was
 only counted and a result whose tier-2 scan was truncated.

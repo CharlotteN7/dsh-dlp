@@ -18,7 +18,8 @@ import type {
   ToolExecutionResult,
 } from '@deepseek-ai/dsh-tools'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
+import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { SessionTelemetryRecord } from '@deepseek-ai/dsh-session-telemetry'
 import { apply, loadOrCreateKey } from '../../src/index.ts'
 import type { Config } from '../../src/policy.ts'
@@ -144,6 +145,8 @@ function mount(
     breadthTier: true,
     resultRedaction: true,
     telemetryRedaction: true,
+    stepContextRedaction: true,
+    claimedInputRedaction: true,
     remoteImageNeutralization: true,
     redactTelemetryWorkspacePaths: true,
     configWriteAsk: true,
@@ -848,6 +851,147 @@ describe('the telemetry registration', () => {
   })
 })
 
+describe('the step-context registration', () => {
+  /** The `agent/pre-step` listener a mount registered, typed as the loop calls it. */
+  function stepListener(plugin: StubContext): (
+    payload: { agent: { session: { id: string } }; messages: UserMessage[]; turn: number; step: number },
+    next: () => Promise<PreStepDecision>,
+  ) => Promise<PreStepDecision> {
+    return plugin.listeners.get('agent/pre-step')?.[0] as never
+  }
+
+  /** One message a splicing listener added, in the shape the providers use. */
+  const added = (text: string): UserMessage => ({
+    id: 'ctx-1' as UserMessage['id'],
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'plugin', plugin: 'agent-instructions' } as UserMessage['source'],
+  })
+
+  /**
+   * One message `dsh-webhook` admitted, in the source shape that package
+   * declares. This package does not depend on `@deepseek-ai/dsh-webhook`, so
+   * its declaration merge into `MessageSourceMap` is out of scope here and the
+   * literal is cast through `unknown`; the fields are copied from that
+   * package's own `.d.ts`.
+   */
+  const delivered = (text: string): UserMessage => ({
+    id: 'hook-1' as UserMessage['id'],
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: {
+      kind: 'webhook',
+      provider: 'github',
+      source: 'gh-main',
+      deliveryId: 'e1f2a3b4',
+      ruleId: 'issue-opened',
+      form: 'notice',
+      summary: 'github webhook handled by issue-opened',
+    } as unknown as UserMessage['source'],
+  })
+
+  const payload = (messages: UserMessage[]) => ({
+    agent: { session: { id: 'session-7' } },
+    messages,
+    turn: 2,
+    step: 3,
+  })
+
+  it('replaces a secret spliced into a step and records it against the turn and step', async () => {
+    const plugin = mount()
+    const context = added(`deploy with ${SLACK}`)
+
+    const decision = await stepListener(plugin)(
+      payload([]),
+      async () => ({ kind: 'enter', messages: [context] }),
+    )
+
+    expect(JSON.stringify(decision)).not.toContain(SLACK)
+    expect(plugin.records()[0]).toMatchObject({
+      kind: 'step-context-redaction',
+      sessionId: 'session-7',
+      turn: 2,
+      step: 3,
+    })
+    expect(JSON.stringify(plugin.records())).not.toContain(SLACK)
+  })
+
+  it('records an invisible-character run even when nothing was replaced by a secret rule', async () => {
+    const plugin = mount()
+    const zeroWidth = added('build with pnpm\u200bthen test')
+
+    await stepListener(plugin)(payload([]), async () => ({ kind: 'enter', messages: [zeroWidth] }))
+
+    expect(plugin.records()[0]).toMatchObject({
+      kind: 'step-context-redaction',
+      unicode: { 'dsh-dlp/unicode-zero-width': 1 },
+    })
+  })
+
+  it('records a truncated scan even with nothing found, so a partial pass is not read as a clean one', async () => {
+    const plugin = mount({ maxScanBytes: 16 })
+
+    await stepListener(plugin)(
+      payload([]),
+      async () => ({ kind: 'enter', messages: [added('a'.repeat(2048))] }),
+    )
+
+    expect(plugin.records()[0]).toMatchObject({ kind: 'step-context-redaction', truncatedScan: true })
+  })
+
+  it('records nothing for a step whose added context is clean', async () => {
+    const plugin = mount()
+
+    await stepListener(plugin)(
+      payload([]),
+      async () => ({ kind: 'enter', messages: [added('build with pnpm')] }),
+    )
+
+    expect(plugin.records()).toEqual([])
+  })
+
+  it('names the source kinds of the claimed input a pass covered', async () => {
+    const plugin = mount()
+    const payload_ = delivered(`the deploy key is ${SLACK}`)
+
+    await stepListener(plugin)(
+      payload([payload_]),
+      async () => ({ kind: 'enter', messages: [payload_] }),
+    )
+
+    expect(plugin.records()[0]).toMatchObject({
+      kind: 'step-context-redaction',
+      claimedSources: ['webhook'],
+    })
+  })
+
+  it('leaves claimedSources off a record produced only by spliced context', async () => {
+    const plugin = mount()
+
+    await stepListener(plugin)(
+      payload([]),
+      async () => ({ kind: 'enter', messages: [added(`deploy with ${SLACK}`)] }),
+    )
+
+    expect(plugin.records()[0]?.['claimedSources']).toBeUndefined()
+  })
+
+  it('registers ahead of the listeners already on that waterfall', () => {
+    expect(mount().options.get('agent/pre-step')?.[0]).toMatchObject({ prepend: true })
+  })
+
+  it('survives one toggle being turned off, because the other still needs the seam', () => {
+    expect(mount({ stepContextRedaction: false }).listeners.has('agent/pre-step')).toBe(true)
+    expect(mount({ claimedInputRedaction: false }).listeners.has('agent/pre-step')).toBe(true)
+  })
+
+  it('is absent only when the deployment turns both passes off', () => {
+    const plugin = mount({ stepContextRedaction: false, claimedInputRedaction: false })
+
+    expect(plugin.listeners.has('agent/pre-step')).toBe(false)
+  })
+})
+
 describe('the repo-local policy tier', () => {
   it('is loaded when the deployment names one', () => {
     const policyFile = join(home, 'repo-policy.yml')
@@ -963,6 +1107,8 @@ describe('this plugin\'s own files', () => {
       breadthTier: false,
       resultRedaction: false,
       telemetryRedaction: false,
+      stepContextRedaction: false,
+      claimedInputRedaction: false,
       remoteImageNeutralization: false,
       redactTelemetryWorkspacePaths: false,
       configWriteAsk: false,

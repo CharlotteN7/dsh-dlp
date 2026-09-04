@@ -1147,3 +1147,138 @@ A second reading of "false positive rate" — the share of *files* rather than o
 reported beside the first, because it is the one that answers "how often would a tool result come
 back with a spurious placeholder in it". At the 16-character floor, the shortest that reaches
 most token formats, that rate is 38.07% and 35.56%.
+
+## 29. Context spliced into a step is redacted at `agent/pre-step`, and only what the waterfall added
+
+`tools/post-execute` covers text that arrives as a tool result. It is not the only text that
+reaches the model. `AgentMachine.preStep` dispatches `agent/pre-step` as a waterfall and the
+turn loop then appends every message the decision carries with
+`this.session.append("user/message", message, { surfaceOp: "append" })` before building the
+request from `session.deriveMessages()`. A listener on that waterfall therefore adds
+model-visible, durably logged text with no tool call involved, and four shipped packages do:
+`dsh-agent-instructions` (the `AGENTS.md`/`CLAUDE.md` chain), `dsh-tmux-context` (captured pane
+text), the Claude Code and Codex hook bridges (a hook's `additionalContext`), and
+`dsh-tool-skill` (a `/name` skill body).
+
+Measured before the listener existed: a workspace `AGENTS.md` carrying a Slack bot token, with
+this plugin mounted and every other pass on, put the token in the provider request and in the
+`user/message` row of the durable log. `tests/e2e/step-context.e2e.ts` is that run.
+
+**Only the messages the waterfall itself added are rewritten.** A message the loop claimed from
+the inbox reached the log as `agent/inbox/spliced` before this seam ran, and nothing here can
+reach that copy; rewriting the claimed message would leave the request and the log disagreeing
+about what the user said, which is the failure mode the "model-visible ⟺ logged" rule exists to
+prevent. Added messages have no earlier copy, so redacting them keeps the two in step — the same
+property `tools/post-execute` relies on. The boundary is object identity, which is what the loop
+and the shipped providers already use: a provider splices its own message into the array it was
+handed.
+
+The cost is that a secret the user types into their own prompt still reaches the provider.
+That is the same answer tool arguments already get, for the same reason, and `docs/index.md`
+says so beside the other limits.
+
+## 30. Inbox-claimed input is redacted too, and the delivery record deliberately keeps the original
+
+§29 drew the pre-step boundary at object identity: only the messages the waterfall itself added
+were rewritten, and everything the loop claimed from the inbox was left alone. The stated reason
+was that a claimed message reached the log as `agent/inbox/spliced` before the seam ran, so
+rewriting it would leave the request and the log disagreeing.
+
+That reason was too broad. `dsh-webhook` admits a verified third party's payload straight into
+the inbox — `handle.agent.followup(createUserMessage({ ..., source: { kind: 'webhook', ... } }))`
+in `lib/index.js` — so §29's boundary sent attacker-controlled text, hidden-instruction carriers
+and any secret it names, to the model unscanned. A subagent's settled result, an agent-to-agent
+relay and anything `agent.inject()` seeded arrive the same way.
+
+### Whether the log seam is reachable
+
+It is not, for the delivery record, and it does not need to be.
+
+`Inbox.mutate` commits the event with `this.session.append('agent/inbox/spliced', splice)` and
+only then publishes `agent/inbox/inserted`, which `AgentEventMap` declares `@mode emit` — a
+notification with no return value and nothing to rewrite. `Session.append` deep-freezes the
+event, pushes it onto the log, and only then invokes the `session/event` observers, whose own
+declaration calls them a "post-commit, fire-and-forget append feed". There is no waterfall
+anywhere on that path.
+
+`Agent.inbox` is public and `Inbox.replace(messageId, newMessage)` is a documented, non-internal
+method that records its replacement as another durable splice, so a listener on
+`agent/inbox/inserted` could in principle put a redacted copy in front of the driver. It is
+rejected on two counts. It cannot unwrite the original event — `append` is append-only and the
+event is frozen — so the best it achieves is a second record beside the first. And it loses a
+race it cannot win: `followup()` wakes the driver synchronously, while this plugin's scan is
+asynchronous because tier 2 awaits `@secretlint/core`. By the time the scan settled, the driver
+would often have claimed the message and `replace()` would return `false`, silently. A control
+that lands sometimes is worse than a documented one that always lands.
+
+### Why the desync does not actually arise
+
+The copy the model reads is not the delivery record. `SurfaceEventType` is
+`'user/message' | 'assistant/message' | 'tool/result'`, and `agent/inbox/spliced` is none of
+them, so it joins no surface and derives no model message. The turn loop appends
+`this.session.append('user/message', message, { surfaceOp: 'append' })` for every message the
+pre-step decision carries, **after** this waterfall returns, and the request is built from that
+surface. Redacting at `agent/pre-step` therefore leaves the surface event, the request and the
+audit record all carrying the same placeholder. "Model-visible ⟺ logged" holds exactly as it
+does for a tool result.
+
+### The asymmetry, chosen rather than tolerated
+
+What remains is that the `agent/inbox/spliced` delivery record keeps the original text. For this
+case that is the wanted outcome, not a cost:
+
+- the text is a third party's, delivered over a webhook this deployment does not control, and an
+  operator investigating an incident needs to read what was actually delivered;
+- it derives no model message, so keeping it there sends nothing to a provider;
+- it is the only durable place that account survives, since this plugin is read-side with
+  respect to the session log and cannot write an event of its own.
+
+`tests/e2e/step-context.e2e.ts` pins both halves in one run: the delivery record holds the token
+and the provider request holds the placeholder. Two consequences follow and are stated rather
+than left to be found. A resumed session replays the delivery record to rebuild pending inbox
+state, so an unclaimed delivery comes back with its original text and is redacted again at the
+claim — the pass is at claim time, which is why replay is covered. And
+`dsh-api-session-controller` broadcasts each `agent/inbox/spliced` to the web client's queue
+view, so a delivery still waiting in the queue is shown to the operator unredacted; it is
+redacted when it is claimed.
+
+### The user's own typing stays exempt
+
+`isUserTyped` is one allowed value, `source.kind === 'user'`, rather than a list of denied ones,
+because `MessageSourceMap` is merge-extensible and a source kind this package has never heard of
+must be scanned rather than trusted. In the installed harness that value is what every
+interactive entry point supplies: `dsh-headless` for a CLI task, `dsh-acp` for an ACP prompt,
+`dsh-sdk-jsonrpc-server` for an SDK one, and `dsh-api-session-controller`'s `user-rpc` source for
+a browser prompt, which adds `rpcId` and `clientTimeZone` beside the same `kind`.
+`dsh-webhook` declares `kind: 'webhook'`, and that package's own relationship invariant
+discriminates on exactly that value.
+
+Two producers borrow `kind: 'user'` for text a person did not type: `dsh-subagent` and
+`dsh-subagent-in-process-driver` open a child agent with a prompt the parent model composed.
+Those stay exempt. Separating them needs a fact the source does not carry, and a guessed
+discriminant in a security decision is worse than a stated gap.
+
+### The default is on
+
+`claimedInputRedaction` defaults to `true`, like every other redaction toggle here, and is
+listed in `ENABLEABLE` so a repo-local policy may switch it back on but never off.
+
+The exemption is what makes that affordable: an interactive session over the CLI, the ACP bridge
+or the web UI sees no change at all, because every prompt on those paths is `kind: 'user'`. What
+it does change is the sessions where a webhook, a subagent or a plugin puts text in front of the
+model, which is the population the feature exists for. The false-positive argument for defaulting
+off does not survive contact with the rest of the plugin either: the same detector tables already
+run by default over every tool result and every spliced instruction file, both far higher in text
+volume than inbox deliveries, so this seam adds no new class of false positive — only more of an
+already-shipped one. A control that has to be switched on protects the deployments that already
+knew to switch it on.
+
+### One registration, one scan
+
+Both toggles drive the same `agent/pre-step` listener, which registers when either is on. The
+scan is joint across every in-scope message, so a secret split between a delivered payload and a
+spliced instruction file is found; the exempt prompt is not in the joined rendering, so its text
+cannot manufacture a span in anything else. The audit record grows one field, `claimedSources`,
+naming the distinct `source.kind` values the pass covered, and it is written only when the pass
+covered claimed input — an operator counting deliveries must not have to read an empty list as
+"none arrived" on every workspace-instruction record.

@@ -51,7 +51,7 @@ import { redactionBreaksSchema } from './schema.ts'
 const RENDER_SEPARATOR = '\n'
 
 /** A scan function over already-scanned strings, plus how complete the scan was. */
-interface PreparedScan {
+export interface PreparedScan {
   readonly scan: (text: string) => readonly Detection[]
   readonly truncated: boolean
   /** Runs of each invisible-character class in the whole rendering, by rule id. */
@@ -78,7 +78,7 @@ interface PreparedScan {
  * @param policy - the effective policy.
  * @returns a memoized lookup, the invisible-character counts, and whether tier 2 saw less than the whole rendering.
  */
-async function prepareScan(strings: readonly string[], policy: ResolvedPolicy): Promise<PreparedScan> {
+export async function prepareScan(strings: readonly string[], policy: ResolvedPolicy): Promise<PreparedScan> {
   const rendered = strings.join(RENDER_SEPARATOR)
   const { detections, truncated } = await scanAll(rendered, policy.syncRules, policy.maxScanBytes)
   const memo = new Map<string, Detection[]>()
@@ -122,7 +122,7 @@ function contentStrings(blocks: readonly ContentBlock[]): string[] {
  * @param messages - the contexts attached to a decision or ferried on a result.
  * @returns every string those messages would put in front of the model or into the log.
  */
-function messageStrings(messages: readonly UserMessage[]): string[] {
+export function messageStrings(messages: readonly UserMessage[]): string[] {
   return messages.flatMap(message => [...contentStrings(message.content), ...nestedStrings(message.source)])
 }
 
