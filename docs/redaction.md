@@ -129,15 +129,39 @@ whatever a hidden-instruction run or a leaked credential rides in on, and it rea
 with no tool call and no waterfall splice. `claimedInputRedaction` scans it with the same two
 tiers, the same invisible-character classes and the same placeholder as everything else here.
 
-**The user's own typing is exempt, and it is the only exemption.** A message whose
-`source.kind` is `user` is passed through untouched: a secret a person deliberately types into
-their own prompt is not a leak this plugin intercepts. That value is what every interactive
-entry point supplies — a CLI task, an ACP prompt, an SDK prompt, and a browser prompt, whose
-source adds `rpcId` beside the same `kind`. `MessageSourceMap` is merge-extensible, so the rule
-is one allowed value rather than a list of denied ones: a source kind from a package this
-plugin has never heard of is scanned rather than trusted. Two producers borrow `kind: 'user'`
-for a subagent's opening prompt, which the parent model composed; those stay exempt, and ADR §30
-says why guessing a finer discriminant would be worse.
+**The user's own typing is exempt below `aggressiveness: high`, and it is the only exemption.**
+A message whose `source.kind` is `user` is passed through untouched at `low` and `medium`. That
+value is what every interactive entry point supplies — a CLI task, an ACP prompt, an SDK prompt,
+and a browser prompt, whose source adds `rpcId` beside the same `kind`. `MessageSourceMap` is
+merge-extensible, so the rule is one allowed value rather than a list of denied ones: a source
+kind from a package this plugin has never heard of is scanned rather than trusted. Two producers
+borrow `kind: 'user'` for a subagent's opening prompt, which the parent model composed; those
+stay exempt too, and ADR §30 says why guessing a finer discriminant would be worse.
+
+### The user's own typing, at `high`
+
+At `aggressiveness: high` the exemption stops applying and a typed prompt is scanned like any
+other message. The reason is one this plugin cannot reason its way around: **it does not know
+where the model is.** The provider comes from the deployment's model selection, it can be any
+OpenAI-compatible base URL, and it can change between turns. A card number a person typed on
+purpose is cardholder data at whatever endpoint the request reaches.
+
+Because it is a deployment judgement rather than a detection question, it is a deployment
+setting — see [Aggressiveness](configuration.md#aggressiveness) for when to turn it on and what
+it costs. Three things it does not reach:
+
+- **tool arguments**, which are never rewritten anywhere in this plugin;
+- **the `agent/inbox/spliced` delivery record**, which keeps every claimed message's original
+  text, so the session log on disk holds what the user typed. Nothing derives a model message
+  from that event, so nothing is sent anywhere;
+- **anything before the claim** — the web client's queue view renders that same record.
+
+One channel it does reach beyond the turn's own request, measured rather than assumed: the
+harness builds its session-title request from the session's human messages, which are the
+redacted `user/message` surface events, so the title request carries the placeholder too.
+
+The audit record names `user` in `claimedSources`, so an operator can tell a redacted prompt from
+a redacted webhook delivery.
 
 ### What the durable log holds
 
@@ -176,9 +200,9 @@ Two tiers:
   GitHub, GitLab, Slack, Stripe, OpenAI, OpenRouter, Anthropic, Google API keys and
   `GOCSPX-` OAuth client secrets, npm, HuggingFace, Groq, xAI, Databricks, SendGrid,
   Supabase, Cloudflare, Notion), PEM private-key blocks, JWTs, credential-bearing URLs,
-  Slack/Discord/Teams webhook URLs, and high-signal secret assignments. This is the tier the
-  guard and the telemetry listener use, because both of those seams are synchronous, and it is
-  never capped.
+  Slack/Discord/Teams webhook URLs, high-signal secret assignments, and payment card numbers.
+  This is the tier the guard and the telemetry listener use, because both of those seams are
+  synchronous, and it is never capped.
 
   Prefix-anchored is the whole criterion for being in this tier, and the reason the table keeps
   growing rather than deferring to tier 2 is the line below: **the telemetry seam cannot reach
@@ -206,6 +230,43 @@ Two tiers:
 A tool result is scanned twice: each of its strings on its own by tier 1, and all of them
 joined by newlines through both tiers. The joined pass finds what no single string reproduces —
 a PEM block arriving as one line per array element, which is exactly the shape `read` produces.
+
+### Payment card numbers
+
+`dsh-dlp/payment-card-number` is the one tier-1 rule with no prefix to anchor on. Neither tier
+had any card rule before 0.10.0 — `@secretlint/core`'s recommended preset registers 28 rules and
+none of them is one — so a card number reached the model and the log through every seam.
+
+A match must pass three tests, not one:
+
+1. an **issuer range** — Visa, Mastercard including the 2-series, American Express, Discover,
+   JCB, Diners Club, UnionPay;
+2. **at a length that issuer assigns**, which is what stops a 4-prefixed order id of the wrong
+   length;
+3. the **Luhn check digit**.
+
+It reads a number written plainly (`4111111111111111`) or printed in groups of three to six
+digits separated by single spaces or hyphens (`4111 1111 1111 1111`, `3782 822463 10005`), and
+it reports exactly the number — a card number typed beside its expiry date leaves the expiry
+alone.
+
+**Severity is `medium`, deliberately.** The guard floor denies at `high` and above, and a denial
+from this rule could not be overridden by anyone. Its false positives are ordinary long numbers
+rather than malformed credentials, so it redacts and audits rather than blocking. A deployment
+that wants the denial raises the severity from its repo-local policy.
+
+Measured against text that is not cardholder data: **zero** findings across the 272,635 lines
+(16.9 MB) of the `deepseek-harness` checkout, none in this package's own sources and docs beyond
+the published test numbers quoted there on purpose, and zero against epoch timestamps at every
+resolution, ISO-8601 timestamps, `Math.random()` printouts, floats in JSON, ISBN-13 and IPv4
+addresses. Against *uniformly random* digit runs the rate is structural and irreducible —
+2.7% of random 16-digit runs, because one run in ten satisfies Luhn and about a quarter of the
+space opens on an issuer range. Ordinary text does not contain uniformly random 16-digit numbers;
+if yours does, that is the number to weigh.
+
+**Maestro is not covered.** Its ranges run from `50` and `56`-`58` through a bare leading `6` at
+lengths from 12 to 19, which is most of the six-prefixed numeric space at most of the lengths an
+identifier uses; including it would cost more ordinary text than it catches.
 
 ### Invisible characters
 

@@ -16,6 +16,7 @@ const hasher = new SpanHasher(Buffer.from('dsh-dlp-unit-test-key-000000000000', 
 const config: Config = {
   auditLog: '/dev/null',
   redactionKeyFile: '/dev/null',
+  aggressiveness: 'low',
   maxScanBytes: 1024 * 1024,
   breadthTier: true,
   resultRedaction: true,

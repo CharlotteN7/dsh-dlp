@@ -15,6 +15,12 @@
       config:
         auditLog: !!js dshHomePath('dsh-dlp.audit.jsonl')
         redactionKeyFile: !!js dshHomePath('dsh-dlp.redaction-key')
+        # `medium` guarantees every pass below is on and that none of them can
+        # be switched off; `high` adds the user's own typed prompt to what is
+        # redacted; `low` guarantees nothing and is what a deployment needing
+        # a pass off must set. A `false` below contradicting the level is a
+        # load-time error rather than a setting that quietly loses.
+        aggressiveness: medium
         maxScanBytes: 1048576
         breadthTier: true
         resultRedaction: true

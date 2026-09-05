@@ -1,8 +1,9 @@
 /**
  * Two detection tiers and the vocabulary they share.
  *
- * Tier 1 is a synchronous table of prefix-anchored token formats, owned here
- * because two of the three seams this plugin uses are synchronous:
+ * Tier 1 is a synchronous table of token formats — prefix-anchored but for the
+ * check-digit-validated card rule — owned here because two of the three seams
+ * this plugin uses are synchronous:
  * `ToolGuard` returns `string | undefined` and the `session-telemetry/record`
  * waterfall returns a record, neither of which can await. Tier 2 wraps
  * `@secretlint/core`, which runs in-process with no subprocess but resolves a
@@ -56,8 +57,10 @@ export interface Detection {
   readonly end: number
   /**
    * Set when the offsets cover exactly what must be replaced, so redaction
-   * must not widen them to the surrounding delimiters. Only the Unicode
-   * indicators set it: their matches are the characters themselves, while a
+   * must not widen them to the surrounding delimiters. Two kinds of rule set
+   * it: the Unicode indicators, whose matches are the characters themselves,
+   * and the payment-card rule, whose match is validated digit by digit and so
+   * covers precisely the number. Everything else leaves it unset, because a
    * secret's reported span is advisory and verified to under-cover (ADR §4).
    */
   readonly exact?: true
@@ -77,6 +80,145 @@ export interface SyncRule {
   readonly severity: Severity
   /** Global-flagged; matched through `matchAll`, which never mutates this instance's `lastIndex`. */
   readonly pattern: RegExp
+  /**
+   * Narrows one raw match to the region that is really a detection, or rejects
+   * it outright by returning `undefined`. Offsets are relative to the match.
+   *
+   * Present for the one format a regular expression cannot decide on its own:
+   * a payment card number is a digit run that must also carry a known issuer
+   * prefix at a length that issuer assigns and satisfy a check digit, and the
+   * run it sits in may carry a neighbouring number the pattern swept up.
+   * Absent everywhere else, where the prefix makes the match unambiguous.
+   */
+  readonly refine?: (match: string) => { readonly start: number; readonly end: number } | undefined
+  /** Whether the reported offsets cover exactly the text to replace; see {@link Detection.exact}. */
+  readonly exact?: true
+}
+
+/**
+ * Whether a digit string satisfies the Luhn check digit (ISO/IEC 7812-1).
+ * @param digits - the number with every separator already removed.
+ * @returns whether the trailing check digit is consistent with the rest.
+ */
+function luhnValid(digits: string): boolean {
+  let sum = 0
+  let double = false
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    let value = digits.charCodeAt(index) - 48
+    if (double) {
+      value *= 2
+      if (value > 9) value -= 9
+    }
+    sum += value
+    double = !double
+  }
+  return sum % 10 === 0
+}
+
+/**
+ * Issuer identification ranges, each with the lengths that issuer assigns.
+ *
+ * The length is half of each rule. Luhn alone accepts one digit run in ten,
+ * and these ranges at these lengths accept 26.8% of the sixteen-digit space
+ * (measured over 200,000 numbers with the check digit forced valid), so it is
+ * the pair that separates a card number from an order id beginning with a 4.
+ *
+ * Maestro is deliberately absent. Its ranges run from `50` and `56`-`58`
+ * through a bare leading `6` at any length from 12 to 19, which is most of the
+ * six-prefixed numeric space at most of the lengths an identifier uses;
+ * including it would cost more ordinary text than it catches.
+ * `docs/redaction.md` records that gap rather than implying coverage.
+ */
+const CARD_RANGES: readonly { readonly prefix: RegExp; readonly lengths: readonly number[] }[] = [
+  { prefix: /^4/, lengths: [13, 16, 19] },
+  { prefix: /^5[1-5]/, lengths: [16] },
+  // Mastercard's 2-series, 222100 through 272099.
+  { prefix: /^2(?:22[1-9]|2[3-9]\d|[3-6]\d\d|7[01]\d|720)/, lengths: [16] },
+  { prefix: /^3[47]/, lengths: [15] },
+  // Discover: 6011, 622126-622925, 644-649, 65.
+  { prefix: /^6(?:011|5\d\d|4[4-9]\d|22(?:12[6-9]|1[3-9]\d|[2-8]\d\d|9[01]\d|92[0-5]))/, lengths: [16, 19] },
+  { prefix: /^35(?:2[89]|[3-8]\d)/, lengths: [16, 17, 18, 19] },
+  // Diners Club: 300-305, 3095, 36, 38, 39.
+  { prefix: /^3(?:0(?:[0-5]|95)|[689])/, lengths: [14, 16, 19] },
+  { prefix: /^62/, lengths: [16, 17, 18, 19] },
+]
+
+/** Whether a bare digit string is a number some issuer would have handed out. */
+function isIssuedCardNumber(digits: string): boolean {
+  const issued = CARD_RANGES.some(range => range.lengths.includes(digits.length) && range.prefix.test(digits))
+  return issued && luhnValid(digits)
+}
+
+/**
+ * Shortest printed digit group.
+ *
+ * This is the constant that keeps an amount written with space thousands
+ * separators from reading as a card number. Measured over 200,000 random
+ * sixteen-digit amounts written `4 920 007 989 245 430`: admitting groups
+ * shorter than three flags 3.75% of them, requiring three flags 0.19%.
+ */
+const MIN_CARD_GROUP = 3
+
+/** Longest printed digit group: American Express is printed 4-6-5. */
+const MAX_CARD_GROUP = 6
+
+/** Most groups one match may span — a 19-digit number takes five, leaving room for one neighbour. */
+const MAX_CARD_GROUPS = 6
+
+/** One printed group of a grouped card number. */
+const CARD_GROUP = String.raw`\d{${MIN_CARD_GROUP},${MAX_CARD_GROUP}}`
+
+/**
+ * A digit run that could be a card number: either unbroken, or printed in
+ * groups separated by single spaces or hyphens.
+ *
+ * The two lookarounds drop the commonest long digit run in machine output that
+ * is not an identifier at all — the fractional part of a decimal. A JavaScript
+ * `Math.random()` prints sixteen digits after the point, and 1.63% of them get
+ * past both the issuer ranges and the check digit; measured over 200,000
+ * printouts, the lookbehind takes that to zero.
+ */
+const CARD_CANDIDATE = new RegExp(
+  String.raw`(?<!\d\.)\b(?:\d{13,19}|${CARD_GROUP}(?:[ -]${CARD_GROUP}){1,${MAX_CARD_GROUPS - 1}})\b(?!\.\d)`,
+  'g',
+)
+
+/**
+ * Narrow one candidate digit run to the card number inside it.
+ *
+ * The pattern is greedy across printed groups, so a run holding a card number
+ * beside an expiry date, an amount or a year arrives here as one match. Every
+ * group-aligned window of the run is tested, longest first, and each window's
+ * edges sit on a separator or on the ends of the match — where the pattern
+ * already established a word boundary — so narrowing never reports part of a
+ * longer unbroken number. An unbroken run has exactly one window, itself,
+ * which is what keeps a 20-digit identifier from being reported as the
+ * 16-digit card number hiding in its first sixteen digits.
+ * @param match - the matched candidate.
+ * @returns offsets of the card number within the match, or `undefined` when there is none.
+ */
+export function refinePaymentCardNumber(match: string): { start: number; end: number } | undefined {
+  const groups: { start: number; end: number; digits: string }[] = []
+  let cursor = 0
+  for (const digits of match.split(/[ -]/)) {
+    groups.push({ start: cursor, end: cursor + digits.length, digits })
+    cursor += digits.length + 1
+  }
+  const windows: { start: number; end: number; digits: string }[] = []
+  for (const [index, first] of groups.entries()) {
+    let digits = ''
+    for (const group of groups.slice(index)) {
+      digits += group.digits
+      windows.push({ start: first.start, end: group.end, digits })
+    }
+  }
+  // Longest first, so a number is reported whole rather than as a prefix of
+  // itself that happens to validate at a shorter issuer length.
+  windows.sort((left, right) => (right.end - right.start) - (left.end - left.start))
+  for (const window of windows) {
+    if (isIssuedCardNumber(window.digits)) return { start: window.start, end: window.end }
+  }
+  return undefined
 }
 
 /**
@@ -85,10 +227,14 @@ export interface SyncRule {
  * credential-bearing URLs. Anything requiring entropy heuristics is left to
  * tier 2, where a false positive costs a redaction rather than a denial.
  *
- * Prefix-anchored is the whole membership criterion, and the reason this table
- * keeps growing rather than deferring to tier 2: the `session-telemetry/record`
- * waterfall is synchronous and cannot reach tier 2 at all, so a format missing
- * here is exported in the clear when telemetry is on.
+ * A structurally unambiguous match is the membership criterion, and the reason
+ * this table keeps growing rather than deferring to tier 2: the
+ * `session-telemetry/record` waterfall is synchronous and cannot reach tier 2
+ * at all, so a format missing here is exported in the clear when telemetry is
+ * on. For every rule but one that means a prefix. The exception is
+ * `dsh-dlp/payment-card-number`, which has no prefix to anchor on and earns
+ * its place through an issuer range, a length that issuer assigns and a check
+ * digit instead.
  */
 export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/aws-access-key-id', version: 1, severity: 'critical', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b/g },
@@ -174,6 +320,23 @@ export const SYNC_RULES: readonly SyncRule[] = [
   { id: 'dsh-dlp/discord-webhook-url', version: 1, severity: 'critical', pattern: /\bhttps:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/[0-9]+\/[A-Za-z0-9_-]{10,}/g },
   { id: 'dsh-dlp/teams-webhook-url', version: 1, severity: 'critical', pattern: /\bhttps:\/\/[A-Za-z0-9.-]*webhook\.office\.com\/webhookb2\/[A-Za-z0-9@/_-]{10,}/g },
   { id: 'dsh-dlp/secret-assignment', version: 1, severity: 'medium', pattern: /\b(?:api[_-]?key|secret[_-]?key|client[_-]?secret|password|passwd|access[_-]?token|auth[_-]?token)\b\s*[=:]\s*["']?[A-Za-z0-9/+=_-]{16,}["']?/gi },
+  // Cardholder data, which is the one class here that is not a credential the
+  // agent could have fetched: it is typed, pasted or read out of a customer
+  // record, and it is regulated wherever it goes. `medium` is deliberate and
+  // is the only rule in this table below `high` other than the assignment
+  // heuristic above it. The guard floor denies at `high`, and a denial from
+  // this rule would be unoverridable, while its false positives are ordinary
+  // long numbers rather than malformed credentials. A deployment that wants
+  // the denial raises the severity from its repo-local policy, which the
+  // tighten-only tier already allows.
+  {
+    id: 'dsh-dlp/payment-card-number',
+    version: 1,
+    severity: 'medium',
+    pattern: CARD_CANDIDATE,
+    refine: refinePaymentCardNumber,
+    exact: true,
+  },
 ] as const
 
 /**
@@ -427,13 +590,17 @@ export function scanSync(
   for (const rule of rules) {
     for (const match of text.matchAll(rule.pattern)) {
       // `matchAll` on a global pattern always reports an index.
-      const start = match.index
+      const region = rule.refine === undefined
+        ? { start: 0, end: match[0].length }
+        : rule.refine(match[0])
+      if (region === undefined) continue
       detections.push({
         ruleId: rule.id,
         ruleVersion: rule.version,
         severity: rule.severity,
-        start,
-        end: start + match[0].length,
+        start: match.index + region.start,
+        end: match.index + region.end,
+        ...rule.exact === true ? { exact: true } : {},
       })
     }
   }

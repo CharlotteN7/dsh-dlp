@@ -18,32 +18,36 @@ built as an out-of-repo plugin.
    the inbox that the user did not type (a `dsh-webhook` delivery's third-party payload, a
    settled subagent result, an agent relay). All of it reaches the model and the durable log
    through `agent/pre-step` without ever being a tool result. A message whose `source.kind` is
-   `user` is exempt: a secret a person deliberately types into their own prompt is not a leak
-   this plugin intercepts. The `agent/inbox/spliced` delivery record keeps a delivery's original
-   text, which is deliberate — it derives no model message, and an operator investigating a
-   webhook incident needs to read what was actually delivered.
+   `user` is exempt below `aggressiveness: high`; at `high` the user's own typed prompt is
+   redacted too, because this plugin cannot know which provider the request is bound for. The
+   `agent/inbox/spliced` delivery record keeps a delivery's original text, which is deliberate —
+   it derives no model message, and an operator investigating a webhook incident needs to read
+   what was actually delivered.
 4. **Redacts secrets out of exported telemetry**, closing a hole where `DSH_TELEMETRY_MODE=FULL`
    ships message text, tool arguments, results and workspace paths in the clear.
-5. **Strips invisible characters that carry hidden instructions** — the Tags block, bidi
+5. **Detects payment card numbers** — issuer range, a length that issuer assigns, and a Luhn
+   check digit — so cardholder data does not reach a third-party model in a tool result, a
+   spliced file, exported telemetry, or (at `aggressiveness: high`) a prompt someone typed.
+6. **Strips invisible characters that carry hidden instructions** — the Tags block, bidi
    overrides, runs of variation selectors — and strips terminal control sequences from the audit
    lane so a tool result cannot forge its own audit record.
-6. **Neutralises remote markdown images in assistant output** and detects a tool call another
+7. **Neutralises remote markdown images in assistant output** and detects a tool call another
    plugin rewrote after the session log recorded it.
-7. **Asks before the agent writes a file that changes future behaviour** — agent settings and
+8. **Asks before the agent writes a file that changes future behaviour** — agent settings and
    hooks, `CLAUDE.md`, `.claude/rules/**` and the other agent rules directories, prompt
    templates, `.vscode/tasks.json`, `.mcp.json`, git hooks, CI workflows, shell startup files,
    `pnpm-workspace.yaml` — and before it writes a `*_BASE_URL` that would redirect a provider
    credential.
-8. **Asks before a call switches off its own confirmation** — `non_interactive: true`,
+9. **Asks before a call switches off its own confirmation** — `non_interactive: true`,
    `approval_mode: auto`, an `apply` whose approval is still pending. Both `ask` tiers are
    prompts rather than controls: they live at `tools/pre-execute`, they can be neutralised, and
    they abstain wherever the approval seam prompts nobody — which includes every install under
    `DSH_PERMISSION_MODE=danger-full-access` and a stock headless install under any mode.
-9. **Writes an audit record for every decision.** A redaction or denial names the rule, its
-   version, the offsets and a keyed hash; the three kinds with no matched region to describe —
-   an ask, a rewritten call, a neutralised image — carry a rule id, the changed field names or
-   the destination hostname instead. Never the secret, never the path or command that matched.
-   `dsh-dlp report` reads it back.
+10. **Writes an audit record for every decision.** A redaction or denial names the rule, its
+    version, the offsets and a keyed hash; the three kinds with no matched region to describe —
+    an ask, a rewritten call, a neutralised image — carry a rule id, the changed field names or
+    the destination hostname instead. Never the secret, never the path or command that matched.
+    `dsh-dlp report` reads it back.
 
 ## What this is not
 
@@ -69,7 +73,9 @@ Three limits worth knowing before you rely on it:
   control.**
 - **Detection is pattern-based.** No entropy rule (measured, not assumed: the lowest
   false-positive-free threshold cannot flag anything shorter than 64–66 characters). Encoded
-  forms pass. A homoglyph defeats every rule in this package.
+  forms pass. A homoglyph defeats every rule in this package. The card rule is Luhn-validated
+  and range-checked and found nothing across 272,635 lines of real source and docs, but
+  a *uniformly random* 16-digit number trips it 2.7% of the time and Maestro is not covered.
 
 [The full list of limits →](https://charlotten7.github.io/dsh-dlp/)
 
@@ -105,6 +111,7 @@ load.
     auditLog: /var/log/dsh-dlp.audit.jsonl
     redactionKeyFile: /var/lib/dsh/dsh-dlp.redaction-key
     policyFile: ./.dsh-dlp.yml        # optional, lowest trust
+    aggressiveness: medium            # low | medium | high
     breadthTier: true
     resultRedaction: true
     telemetryRedaction: true
@@ -118,10 +125,24 @@ load.
 version control — it is what makes a placeholder's hash keyed rather than a bare digest anyone
 holding a candidate secret could confirm.
 
+**`aggressiveness` is one word for how far redaction reaches.** `low` guarantees nothing and lets
+each toggle stand alone; `medium` — the default — guarantees every pass is on and that no toggle
+can take one away; `high` adds the user's own typed prompt to what is redacted. It composes with
+the toggles rather than overriding them: at `medium` and `high` a toggle set to `false`
+contradicts the level and **fails the mount** with the fix in the message, rather than one setting
+quietly beating the other.
+
+> **Upgrading from 0.9.0.** The default `medium` matches the shipped toggle defaults exactly, so
+> an install that never wrote a toggle is unchanged. An install that set any redaction toggle to
+> `false` now refuses to mount; add `aggressiveness: low` to the same row and it means what it
+> meant before. `high` is opt-in.
+
 **The guard floor has no configuration.** Credential-path denial and secret-argument denial are
 security invariants, not deployment-varying tunables. A repo-local `policyFile` is the lowest
 trust rank and may only *tighten*: add deny patterns, add egress tool names, raise a severity,
-switch a pass on. Any downgrade makes the whole file invalid.
+switch a pass on. It cannot reach `aggressiveness` — raising the level would let a hostile
+workspace put placeholders into the user's own prompt. Any downgrade makes the whole file
+invalid.
 
 [Configuration reference →](https://charlotten7.github.io/dsh-dlp/configuration.html) ·
 [What gets denied →](https://charlotten7.github.io/dsh-dlp/denials.html) ·

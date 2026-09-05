@@ -9,11 +9,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
+  Config,
   loadRepoPolicy,
   parseRepoPolicy,
   PolicyError,
   resolvePolicy,
-  type Config,
 } from '../../src/policy.ts'
 import { SYNC_RULES } from '../../src/detectors.ts'
 import { resolveDshHome } from '../../src/home.ts'
@@ -24,6 +24,7 @@ afterAll(() => { rmSync(home, { recursive: true, force: true }) })
 const baseConfig: Config = {
   auditLog: '/var/log/dsh-dlp.jsonl',
   redactionKeyFile: '/var/lib/dsh-dlp.key',
+  aggressiveness: 'low',
   maxScanBytes: 1024,
   breadthTier: false,
   resultRedaction: false,
@@ -255,5 +256,90 @@ describe('the merged policy', () => {
     const resolved = resolvePolicy(baseConfig, repo)
 
     expect(resolved.syncRules.find(rule => rule.id === 'dsh-dlp/secret-assignment')?.severity).toBe('critical')
+  })
+})
+
+/** The nine per-seam toggles, all on, which is what a deployment gets by default. */
+const everyPassOn: Config = {
+  ...baseConfig,
+  breadthTier: true,
+  resultRedaction: true,
+  telemetryRedaction: true,
+  stepContextRedaction: true,
+  claimedInputRedaction: true,
+  remoteImageNeutralization: true,
+  redactTelemetryWorkspacePaths: true,
+  configWriteAsk: true,
+  approvalSuppressionAsk: true,
+}
+
+/**
+ * Validate a `cordis.yml` row the way the loader does. The row is parsed YAML
+ * rather than a typed object, which is exactly what the schema is for, and the
+ * schema's declared input type is the validated shape it produces.
+ * @param row - the deployment's configuration row before validation.
+ * @returns the validated configuration.
+ */
+function validate(row: Record<string, unknown>): Config {
+  return Config(row as unknown as Config)
+}
+
+describe('the aggressiveness level', () => {
+  it('defaults to medium, which is what the shipped toggle defaults already describe', () => {
+    const validated = validate({ auditLog: '/var/log/a.jsonl', redactionKeyFile: '/var/lib/k' })
+
+    expect(validated.aggressiveness).toBe('medium')
+    expect(resolvePolicy(validated).userTypedInputRedaction).toBe(false)
+    expect(resolvePolicy(validated).telemetryRedaction).toBe(true)
+  })
+
+  it('rejects a word that is not one of the three levels', () => {
+    expect(() => validate({ auditLog: '/a', redactionKeyFile: '/k', aggressiveness: 'paranoid' }))
+      .toThrow(/aggressiveness/)
+  })
+
+  it('puts the user\'s own typed prompt in scope at high, and at no other level', () => {
+    expect(resolvePolicy({ ...everyPassOn, aggressiveness: 'high' }).userTypedInputRedaction).toBe(true)
+    expect(resolvePolicy({ ...everyPassOn, aggressiveness: 'medium' }).userTypedInputRedaction).toBe(false)
+    expect(resolvePolicy({ ...baseConfig, aggressiveness: 'low' }).userTypedInputRedaction).toBe(false)
+  })
+
+  it('reports the level the seams resolved under', () => {
+    expect(resolvePolicy({ ...everyPassOn, aggressiveness: 'high' }).aggressiveness).toBe('high')
+  })
+
+  it('refuses to load when a toggle contradicts the level, naming both', () => {
+    // Two deployment-controlled settings describing different plugins. Either
+    // one losing quietly leaves an operator believing a pass runs that does
+    // not, or the reverse.
+    expect(() => resolvePolicy({ ...everyPassOn, aggressiveness: 'medium', telemetryRedaction: false }))
+      .toThrow(/telemetryRedaction is set to false/)
+    expect(() => resolvePolicy({ ...everyPassOn, aggressiveness: 'high', breadthTier: false }))
+      .toThrow(/aggressiveness: high/)
+  })
+
+  it('names every contradicting toggle at once, so the fix takes one pass', () => {
+    expect(() => resolvePolicy({
+      ...everyPassOn,
+      aggressiveness: 'medium',
+      breadthTier: false,
+      configWriteAsk: false,
+    })).toThrow(/breadthTier, configWriteAsk are set to false/)
+  })
+
+  it('is the level a deployment moves to when it needs a pass off', () => {
+    // Every configuration that was legal before the level existed is still
+    // legal at low, which is what keeps an upgrade from rewriting behaviour.
+    const resolved = resolvePolicy({ ...baseConfig, aggressiveness: 'low' })
+
+    expect(resolved.breadthTier).toBe(false)
+    expect(resolved.resultRedaction).toBe(false)
+  })
+
+  it('cannot be raised by a repo-local policy, which has no key for it', () => {
+    // The level's own lever is redacting what the user typed. A workspace that
+    // could force it could garble the user's words on the way to the model.
+    expect(() => parseRepoPolicy('v: 1\naggressiveness: high\n')).toThrow(/unknown keys: aggressiveness/)
+    expect(() => parseRepoPolicy('v: 1\nenable: [userTypedInputRedaction]\n')).toThrow(/unknown toggle/)
   })
 })

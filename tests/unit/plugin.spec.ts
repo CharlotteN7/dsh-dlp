@@ -141,6 +141,7 @@ function mount(
   apply(stub.ctx, {
     auditLog,
     redactionKeyFile: join(home, `key-${counter}`),
+    aggressiveness: 'low',
     maxScanBytes: 1024 * 1024,
     breadthTier: true,
     resultRedaction: true,
@@ -1103,6 +1104,7 @@ describe('this plugin\'s own files', () => {
     apply(stub.ctx, {
       auditLog,
       redactionKeyFile,
+      aggressiveness: 'low',
       maxScanBytes: 1024 * 1024,
       breadthTier: false,
       resultRedaction: false,

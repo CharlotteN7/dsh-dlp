@@ -22,6 +22,9 @@
 import { describe, expect, it } from 'vitest'
 import { runAgent } from './harness.ts'
 
+/** The published Visa test number: a real format, never issued, never chargeable. */
+const TEST_PAN = '4111111111111111'
+
 /** A Slack bot token shaped like the real thing; invented here, never a live credential. */
 const SLACK_TOKEN = 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrStUvWx'
 
@@ -265,17 +268,100 @@ describe('dsh-dlp over input the loop claimed from the inbox', () => {
       },
       // A patch REPLACES a row's whole `config`, so the two required paths are
       // restated; every other toggle falls back to its schema default, which
-      // leaves `stepContextRedaction` on and this seam registered.
+      // leaves `stepContextRedaction` on and this seam registered. `low` is
+      // required to switch a pass off at all: the default level guarantees
+      // every pass, and a toggle contradicting it fails the mount.
       extraProfilePatch: [
         '- id: dsh-dlp',
         '  config:',
         "    auditLog: !!js dshHomePath('dsh-dlp.audit.jsonl')",
         "    redactionKeyFile: !!js dshHomePath('dsh-dlp.redaction-key')",
+        '    aggressiveness: low',
         '    claimedInputRedaction: false',
       ].join('\n'),
     })
 
     expect(result.code, result.stderr).toBe(0)
     expect(JSON.stringify(result.modelRequests)).toContain(SLACK_TOKEN)
+  }, 120_000)
+})
+
+describe('dsh-dlp over the prompt the user typed themselves', () => {
+  it('redacts a card number out of the request at aggressiveness high', async () => {
+    const result = await runAgent({
+      task: `charge ${TEST_PAN} for invoice 82 and confirm`,
+      sequence: ['success', 'success'],
+      successText: 'confirmed',
+      cwdIsWorkspace: true,
+      seedFiles: { '.git/HEAD': 'ref: refs/heads/main\n' },
+      extraProfilePatch: [
+        '- id: dsh-dlp',
+        '  config:',
+        "    auditLog: !!js dshHomePath('dsh-dlp.audit.jsonl')",
+        "    redactionKeyFile: !!js dshHomePath('dsh-dlp.redaction-key')",
+        '    aggressiveness: high',
+      ].join('\n'),
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+
+    // The prompt did reach the request; what changed is the sixteen digits.
+    const requests = JSON.stringify(result.modelRequests)
+    expect(requests).toContain('for invoice 82')
+    expect(requests).not.toContain(TEST_PAN)
+    expect(requests).toContain('[REDACTED:dsh-dlp:payment-card-number:')
+
+    // The surface event every request is derived from carries the placeholder.
+    const surface = result.sessionLog.filter(row => row['type'] === 'user/message')
+    expect(surface.length).toBeGreaterThan(0)
+    expect(JSON.stringify(surface)).not.toContain(TEST_PAN)
+
+    // The delivery record keeps the original, as ADR §30 says it does for
+    // every claimed message. Nothing derives a model message from it, and this
+    // is the local session log rather than anything a provider sees.
+    const delivered = result.sessionLog.filter(row => row['type'] === 'agent/inbox/spliced')
+    expect(JSON.stringify(delivered)).toContain(TEST_PAN)
+
+    const redactions = result.auditRecords.filter(record => record['kind'] === 'step-context-redaction')
+    expect(redactions.length).toBeGreaterThan(0)
+    expect(redactions[0]?.['claimedSources']).toEqual(['user'])
+    const spans = redactions[0]?.['spans'] as { ruleId: string; hash: string }[]
+    expect(spans[0]?.ruleId).toBe('dsh-dlp/payment-card-number')
+    expect(JSON.stringify(result.auditRecords)).not.toContain(TEST_PAN)
+  }, 120_000)
+
+  it('leaves the same prompt alone at the default level', async () => {
+    const result = await runAgent({
+      task: `charge ${TEST_PAN} for invoice 82 and confirm`,
+      sequence: ['success', 'success'],
+      successText: 'confirmed',
+      cwdIsWorkspace: true,
+      seedFiles: { '.git/HEAD': 'ref: refs/heads/main\n' },
+    })
+
+    expect(result.code, result.stderr).toBe(0)
+    expect(JSON.stringify(result.modelRequests)).toContain(TEST_PAN)
+  }, 120_000)
+
+  it('refuses to mount when a toggle contradicts the level, rather than picking a winner', async () => {
+    const result = await runAgent({
+      task: 'summarise the project',
+      sequence: ['success'],
+      successText: 'done',
+      cwdIsWorkspace: true,
+      seedFiles: { '.git/HEAD': 'ref: refs/heads/main\n' },
+      extraProfilePatch: [
+        '- id: dsh-dlp',
+        '  config:',
+        "    auditLog: !!js dshHomePath('dsh-dlp.audit.jsonl')",
+        "    redactionKeyFile: !!js dshHomePath('dsh-dlp.redaction-key')",
+        '    aggressiveness: high',
+        '    resultRedaction: false',
+      ].join('\n'),
+    })
+
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toContain('resultRedaction is set to false')
+    expect(result.stderr).toContain('aggressiveness: low')
   }, 120_000)
 })

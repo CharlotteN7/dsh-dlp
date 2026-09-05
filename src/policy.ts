@@ -11,7 +11,10 @@
  * Rank 3 is a file inside the workspace, so a hostile repository ships one and
  * a prompt-injected agent can write one. It may add deny patterns, add egress
  * tools, raise a severity, and switch a redaction pass on. Every other key,
- * and every downgrade, is a load-time error rather than a silent ignore.
+ * and every downgrade, is a load-time error rather than a silent ignore. It
+ * cannot reach {@link Config.aggressiveness}: the level's own lever is
+ * redacting what the user typed, and a workspace that could force that could
+ * garble the user's own words on their way to the model.
  * @module dsh-dlp/policy
  */
 
@@ -24,8 +27,33 @@ import { SYNC_RULES, severityRank, stripControlSequences, type Severity, type Sy
 import { resolveDshHome } from './home.ts'
 import { CREDENTIAL_PATH_RULES, escapePathPattern, homeCredentialPathRules, type CredentialPathRule } from './paths.ts'
 
+/**
+ * How far redaction reaches, as one word.
+ *
+ * The level is not a tenth switch beside the nine below it. It states what the
+ * deployment guarantees, the toggles state which passes carry it out, and the
+ * two may not disagree: at `medium` and `high` a toggle set to `false`
+ * contradicts the guarantee and is a load-time error rather than a setting
+ * that quietly loses.
+ *
+ * - `low` guarantees nothing. Every pass is exactly its own toggle, which is
+ *   still `true` unless the deployment says otherwise. This is the level to
+ *   pick when a pass has to be switched off.
+ * - `medium` guarantees that every pass this package ships is on and that no
+ *   toggle can take one away. The user's own typing stays exempt.
+ * - `high` is `medium` plus the one thing no toggle can express: the exemption
+ *   in `isUserTyped` stops applying, so a secret in the user's own prompt is
+ *   redacted before the request is built from it.
+ */
+export type Aggressiveness = 'low' | 'medium' | 'high'
+
 /** Deployment configuration, validated from `cordis.yml`. */
 export interface Config {
+  /**
+   * How far redaction reaches. See {@link Aggressiveness}; `high` is the only
+   * value that puts the user's own typed prompt in scope.
+   */
+  aggressiveness: Aggressiveness
   /** Absolute path of this plugin's own JSONL audit sink. Never the session log. */
   auditLog: string
   /** Absolute path of the installation's redaction key; created with 32 random bytes if absent. */
@@ -74,6 +102,7 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
+  aggressiveness: z.union([z.const('low'), z.const('medium'), z.const('high')]).default('medium'),
   auditLog: z.string().required(),
   redactionKeyFile: z.string().required(),
   policyFile: z.string(),
@@ -105,6 +134,42 @@ const ENABLEABLE = [
 /** One toggle name a repo-local policy may name in `enable`. */
 export type EnableableToggle = typeof ENABLEABLE[number]
 
+/**
+ * Passes each level requires, whatever the toggles say.
+ *
+ * `low` requires none, which is what makes it the level a deployment moves to
+ * when it needs a pass off — and what makes every configuration that was legal
+ * before this field existed still legal. `medium` and `high` require all of
+ * them, so the one-word setting and the nine booleans can never describe
+ * different plugins.
+ */
+const LEVEL_REQUIRES: Readonly<Record<Aggressiveness, readonly EnableableToggle[]>> = {
+  low: [],
+  medium: ENABLEABLE,
+  high: ENABLEABLE,
+}
+
+/**
+ * Reject a configuration whose level and whose toggles describe different
+ * behaviour.
+ *
+ * Loud at load rather than silently resolved either way: two
+ * deployment-controlled settings disagreeing is self-contained
+ * misconfiguration, and whichever of them lost would be a pass an operator
+ * believes is running and is not, or one they believe is off and is not.
+ * @param config - the deployment-controlled configuration.
+ * @throws PolicyError naming every toggle that contradicts the level.
+ */
+function assertLevelAgrees(config: Config): void {
+  const contradicted = LEVEL_REQUIRES[config.aggressiveness].filter(toggle => !config[toggle])
+  if (contradicted.length === 0) return
+  throw new PolicyError(
+    `aggressiveness: ${config.aggressiveness} requires every pass this package ships, but`
+    + ` ${contradicted.join(', ')} ${contradicted.length === 1 ? 'is' : 'are'} set to false.`
+    + ' Set aggressiveness: low to choose passes individually, or drop the false setting.',
+  )
+}
+
 /** Keys a repo-local policy file may carry; anything else fails the load. */
 const POLICY_KEYS = ['v', 'addCredentialPaths', 'addEgressTools', 'raiseSeverity', 'enable'] as const
 
@@ -125,6 +190,16 @@ export interface ResolvedPolicy {
   readonly extraEgressTools: ReadonlySet<string>
   readonly syncRules: readonly SyncRule[]
   readonly maxScanBytes: number
+  readonly aggressiveness: Aggressiveness
+  /**
+   * Whether a message the user typed themselves is scanned like any other.
+   *
+   * Set by the level alone, at `high` only, and by nothing else: there is no
+   * toggle for it and a repo-local policy cannot reach it. `isUserTyped` still
+   * decides which messages this applies to; this decides whether that answer
+   * exempts them.
+   */
+  readonly userTypedInputRedaction: boolean
   readonly breadthTier: boolean
   readonly resultRedaction: boolean
   readonly telemetryRedaction: boolean
@@ -379,6 +454,7 @@ function selfProtectionRules(config: Config, dshHome: string): CredentialPathRul
  * @returns the effective policy every seam reads.
  */
 export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy {
+  assertLevelAgrees(config)
   const enabled = (toggle: EnableableToggle): boolean => config[toggle] || (repo?.enable.includes(toggle) ?? false)
   return {
     credentialPathRules: [
@@ -393,6 +469,8 @@ export function resolvePolicy(config: Config, repo?: RepoPolicy): ResolvedPolicy
       return raised === undefined ? rule : { ...rule, severity: raised }
     }),
     maxScanBytes: config.maxScanBytes,
+    aggressiveness: config.aggressiveness,
+    userTypedInputRedaction: config.aggressiveness === 'high',
     breadthTier: enabled('breadthTier'),
     resultRedaction: enabled('resultRedaction'),
     telemetryRedaction: enabled('telemetryRedaction'),

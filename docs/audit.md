@@ -54,9 +54,10 @@ and nothing else from the URL.
 A `step-context-redaction` record names the session, turn and step rather than a call: nothing
 dispatched, so there is no `callId` or tool name to carry. It carries `claimedSources` when the
 pass covered input the loop claimed from the inbox — the distinct `source.kind` values it
-rewrote, `["webhook"]` for a `dsh-webhook` delivery — and omits the field entirely when the pass
-only covered context a listener spliced in, so an empty list never has to be read as "no
-delivery arrived".
+rewrote, `["webhook"]` for a `dsh-webhook` delivery and `["user"]` for a prompt the person typed,
+which only appears at `aggressiveness: high` — and omits the field entirely when the pass only
+covered context a listener spliced in, so an empty list never has to be read as "no delivery
+arrived".
 
 A `result-redaction` or `step-context-redaction` record may also carry `unicode`, a count of invisible-character runs per
 class — counts only, because a hidden instruction is exactly the content this file must not

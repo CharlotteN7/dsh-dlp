@@ -76,8 +76,10 @@ this build has never heard of — is treated as egress-capable. Unknown defaults
 What this arm actually catches is a whole, unencoded secret of `high` severity or above sitting
 in one argument string. `A=ghp_firsthalf; B=…; curl -H "Bearer $A$B"`, a base64 round-trip, and
 `$(cat ~/.token)` all defeat **this** arm, because none of them puts a secret in the argument;
-a `password=` assignment is `medium` and is redacted rather than denied. Treat it as a guard
-against accident, not against an adversary.
+a `password=` assignment is `medium` and is redacted rather than denied, and so is a payment
+card number — an unoverridable denial on an order id that happens to satisfy Luhn is a worse
+outcome than a placeholder, and a deployment that disagrees raises that rule's severity from its
+repo-local policy. Treat it as a guard against accident, not against an adversary.
 
 `$(cat ~/.token)` is the one to read carefully, because the floor has two arms and only the
 secret arm misses it: the credential-path arm above tests every token of the same command line

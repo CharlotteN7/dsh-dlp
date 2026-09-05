@@ -25,6 +25,7 @@ const hasher = new SpanHasher(Buffer.from('dsh-dlp-unit-test-key-000000000000', 
 const policy = resolvePolicy({
   auditLog: '/dev/null',
   redactionKeyFile: '/dev/null',
+  aggressiveness: 'medium',
   maxScanBytes: 1024 * 1024,
   breadthTier: true,
   resultRedaction: true,
@@ -402,6 +403,7 @@ describe('a value that cannot be cleaned', () => {
     const stubborn = resolvePolicy({
       auditLog: '/dev/null',
       redactionKeyFile: '/dev/null',
+      aggressiveness: 'medium',
       maxScanBytes: 1024 * 1024,
       breadthTier: true,
       resultRedaction: true,
@@ -450,6 +452,7 @@ describe('a result larger than the tier-2 budget', () => {
     const capped = resolvePolicy({
       auditLog: '/dev/null',
       redactionKeyFile: '/dev/null',
+      aggressiveness: 'medium',
       maxScanBytes: 1000,
       breadthTier: true,
       resultRedaction: true,
@@ -475,6 +478,7 @@ describe('a result larger than the tier-2 budget', () => {
     const capped = resolvePolicy({
       auditLog: '/dev/null',
       redactionKeyFile: '/dev/null',
+      aggressiveness: 'medium',
       maxScanBytes: 100,
       breadthTier: true,
       resultRedaction: true,

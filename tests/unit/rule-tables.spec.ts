@@ -146,6 +146,13 @@ const SYNC_FIXTURES: Readonly<Record<string, Fixture>> = {
     match: 'api_key = "0123456789abcdef0123"',
     miss: 'api_key = "0123456789"',
   },
+  // The published Visa test number, which is a real format and was never
+  // issued to anyone. The near miss changes its last digit, so it keeps the
+  // issuer range and the length and fails only the check digit.
+  'dsh-dlp/payment-card-number': {
+    match: '4111111111111111',
+    miss: '4111111111111112',
+  },
 }
 
 /**

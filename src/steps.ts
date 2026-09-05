@@ -19,8 +19,12 @@
  * payload with `agent.followup()`, a subagent's settled result and an
  * agent-to-agent relay arrive the same way, and so does anything
  * `agent.inject()` seeded. {@link isUserTyped} is the exemption, and it is the
- * only one: a secret a person deliberately types into their own prompt is not
- * a leak this plugin intercepts.
+ * only one, but it is not unconditional: it applies at `aggressiveness: low`
+ * and `medium`, and stops applying at `high`. This plugin cannot know where
+ * the request is going, and a card number a person typed on purpose is still
+ * cardholder data at whatever provider the deployment happens to be pointed
+ * at, so the deployment says which reading it wants rather than this module
+ * assuming one.
  *
  * A claimed message differs from an added one in exactly one way, and it is
  * narrower than it looks. Its delivery was already recorded as
@@ -68,7 +72,7 @@ export interface StepRedaction {
 
 /**
  * Whether one message the loop claimed from the inbox is the user's own
- * typing, and therefore exempt.
+ * typing, which exempts it below `aggressiveness: high`.
  *
  * `MessageSourceMap` is merge-extensible and every producer picks its own
  * `kind`, so the exemption is a single allowed value rather than a list of
@@ -86,6 +90,9 @@ export interface StepRedaction {
  * prompt under `kind: 'user'`. Those stay exempt here. Distinguishing them
  * needs a fact the source does not carry, and inventing one would put a
  * guessed value in a security decision.
+ *
+ * At `aggressiveness: high` the caller stops consulting this, so the two
+ * borrowed cases stop being exempt with everything else.
  * @param message - one message the loop claimed from the inbox.
  * @returns whether the message came from a person typing into their own prompt.
  */
@@ -115,7 +122,7 @@ export async function redactStepContext(
   // claimed message is the same object it arrived as.
   const claimedSet = new Set<UserMessage>(claimed)
   const inScope = (message: UserMessage): boolean => claimedSet.has(message)
-    ? policy.claimedInputRedaction && !isUserTyped(message)
+    ? policy.claimedInputRedaction && (policy.userTypedInputRedaction || !isUserTyped(message))
     : policy.stepContextRedaction
   const selected = decision.messages.filter(inScope)
   if (selected.length === 0) return { decision, ...nothing }

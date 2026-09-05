@@ -61,6 +61,7 @@ async function registry(): Promise<{ ctx: Context; records: () => Record<string,
   apply(ctx, {
     auditLog,
     redactionKeyFile: join(home, `key-${counter}`),
+    aggressiveness: 'low',
     maxScanBytes: 1024 * 1024,
     breadthTier: false,
     resultRedaction: false,

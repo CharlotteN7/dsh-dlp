@@ -1282,3 +1282,208 @@ cannot manufacture a span in anything else. The audit record grows one field, `c
 naming the distinct `source.kind` values the pass covered, and it is written only when the pass
 covered claimed input — an operator counting deliveries must not have to read an empty list as
 "none arrived" on every workspace-instruction record.
+
+## 31. An aggressiveness level, and why it is not a tenth toggle
+
+§30 left the user's own typing exempt on the reasoning that "a secret a person deliberately types
+into their own prompt is not a leak this plugin intercepts". That reasoning assumed a fact this
+plugin does not have: **where the request is going.** The provider is chosen by the deployment's
+model selection, can be any OpenAI-compatible base URL, and can change between turns. A card
+number a person typed on purpose is cardholder data at whatever endpoint the request reaches, and
+"the user chose to" is not a defence a PCI assessor accepts on that person's behalf.
+
+The answer is not to redact the prompt everywhere. An interactive user who types a credential and
+then sees the model reason about `[REDACTED:dsh-dlp:…]` has lost the turn, and for most
+deployments — an internal endpoint, a self-hosted model, a developer's own laptop — the exemption
+is right. So this is a deployment judgement, and it gets a deployment setting.
+
+### The shape: three levels, one new lever
+
+`Config.aggressiveness` is `low | medium | high`.
+
+| Level | What the level itself guarantees |
+|---|---|
+| `low` | nothing. Every pass is exactly its own toggle, which still defaults to `true`. |
+| `medium` | every pass this package ships is on, and no toggle can take one away. The user's own typing stays exempt. |
+| `high` | `medium`, plus the `isUserTyped` exemption stops applying. |
+
+An enum rather than a number because the levels are not a continuum to interpolate — each one
+names a set of behaviours, and a `7` would invite the question of what `6` did.
+
+### How it composes with the nine toggles
+
+The level is not a tenth independent switch, and it does not silently override the nine. It is a
+*constraint over them*, plus exactly one lever none of them can express:
+
+```
+enabled(pass)               = config[pass] || repoPolicy.enable.includes(pass)
+userTypedInputRedaction     = aggressiveness === 'high'
+and, at load:  aggressiveness !== 'low'  ⟹  every toggle is true, or the mount fails
+```
+
+The contradiction is a **load-time `PolicyError`**, not a resolution rule. Two
+deployment-controlled settings describing different plugins is self-contained misconfiguration,
+which CONVENTIONS says fails loud at load. Whichever of them lost quietly would leave an operator
+reading their own `cordis.yml` and getting the wrong answer about whether a pass runs — and for a
+DLP plugin that is the whole failure mode. The message names every offending toggle and the
+one-line fix:
+
+```
+dsh-dlp policy: aggressiveness: high requires every pass this package ships, but
+resultRedaction is set to false. Set aggressiveness: low to choose passes individually,
+or drop the false setting.
+```
+
+`tests/e2e/step-context.e2e.ts` boots a real harness with that row and asserts the process exits
+non-zero with that text, rather than mounting a plugin whose configuration disagrees with itself.
+
+`low` requiring nothing is what makes every configuration that was legal in 0.9.0 still legal in
+0.10.0. A `low` floor covering even the passes that were on by default would have made
+`resultRedaction: false` — a documented, supported setting — unrepresentable at any level.
+
+### Why the repo-local tier cannot reach it
+
+The tighten-only tier can add deny patterns, add egress tools, raise a severity, and switch any of
+the nine passes on. It gets no key for `aggressiveness` and no `userTypedInputRedaction` entry in
+`ENABLEABLE`.
+
+Every other tightening a workspace can do acts on text the workspace does not own. This one would
+act on the user's own words: a hostile repository that could force `high` could make the user's
+prompt arrive at the model with pieces replaced by placeholders, on the strength of a detector with
+a measured false-positive rate. That is not the same class of change as adding a deny pattern, and
+"tighter" is not sufficient reason to hand it to the lowest-trust source.
+
+### The default is `medium`, and one class of install must change a line
+
+`medium`'s floor is exactly the nine schema defaults, so an install that never wrote a toggle
+resolves to the same policy it had in 0.9.0, bit for bit, and gains nothing but the guarantee
+stated in one word.
+
+The alternative default, `low`, would have changed nothing for anyone — and would have shipped a
+value that understates the package. Every install would run at the level that promises nothing
+while every pass was in fact on, and `medium` would document behaviour nobody was configured for.
+
+The cost is a single class of install: one that explicitly set a redaction toggle to `false`. Those
+fail to mount on upgrade, loudly, with `aggressiveness: low` named in the error. That is a
+deliberate trade — an upgrade that stops with an explanation is better than one that silently
+switches a pass the operator turned off back on. `README.md` and `docs/configuration.md` carry the
+upgrade note.
+
+### What `high` does not reach
+
+The exemption is the only thing that changes. Three things do not:
+
+- **The tool-argument path.** Arguments cannot be rewritten (they are already logged and
+  presented), so a card number the model puts into a tool call is still denied or allowed, never
+  redacted. That is the same answer as every other secret class.
+- **The `agent/inbox/spliced` delivery record.** §30 keeps the original there for a webhook payload
+  because an operator investigating a delivery needs it. A user-typed prompt takes the same path
+  and so the local session log keeps the digits the user typed. This is stated rather than fixed:
+  this plugin is read-side with respect to the session log and cannot rewrite a committed event.
+  Nothing derives a model message from that event, so nothing is sent anywhere — but a deployment
+  whose compliance boundary includes the session log on disk needs to know that the file holds
+  what the user typed.
+- **Anything before the claim.** The web client's queue view renders `agent/inbox/spliced`
+  directly, so a prompt still queued is shown as typed.
+
+What it does reach beyond the turn's own request is worth naming, because it was measured rather
+than assumed: the harness's session-title generation builds its own provider request from the
+session's human messages, and those are the redacted `user/message` surface events, so the title
+request carries the placeholder too. Before this change the same run sent the card number to the
+provider twice.
+
+## 32. There was no card-number detector at all, and what one costs
+
+`aggressiveness: high` exists because a user might type a card number into a prompt bound for a
+third-party model. Before building the level, both tiers were run over the published test numbers
+of every major issuer — Visa, Mastercard (including the 2-series), American Express, Discover,
+JCB, Diners Club and UnionPay, plain and printed in groups. **Every one came back with no
+detection.** Tier 1's table is prefix-anchored token formats and has no card rule, and
+`@secretlint/secretlint-rule-preset-recommend@13.0.4` registers 28 rules — enumerated from the
+package, not from its README — none of which is a card rule.
+
+Shipping a level whose headline case its detectors could not see would have been theatre, so
+`dsh-dlp/payment-card-number` is part of this change rather than a follow-up.
+
+### Tier 1, and why it needs a hook the other rules do not
+
+The rule is in the synchronous table for the reason every rule is: `session-telemetry/record`
+returns a record synchronously and cannot reach tier 2, so a format missing from tier 1 is
+exported in the clear whenever telemetry is on.
+
+It is the only rule in that table with no prefix to anchor on. A regular expression cannot decide
+it: the test is an issuer range, *at a length that issuer assigns*, *and* a Luhn check digit.
+`SyncRule` therefore grows one optional member, `refine`, which narrows a raw match to the region
+that is really a detection or rejects it. One rule uses it. The alternative — a bare
+`validate: boolean` — could reject a match but not narrow one, and a printed card number arrives
+beside its expiry date often enough that narrowing is the difference between finding it and not.
+
+### Severity `medium`, deliberately
+
+`DENY_SEVERITY` is `high`, so a `high` card rule would make the guard floor deny any egress-capable
+call carrying one — unoverridably, because the floor is not configurable. The false positives of
+this rule are ordinary long numbers rather than malformed credentials, and an unfixable denial on
+an order id is a worse outcome than a redaction. A deployment that wants the denial raises the
+severity from its repo-local policy, which the tighten-only tier has always allowed.
+
+### The false-positive measurements
+
+The whole risk of this rule is that at `high` it runs over every prompt a person types. Measured
+with a seeded generator, 100,000 samples per row unless stated:
+
+| Corpus | Flagged |
+|---|---|
+| uniformly random 16-digit runs | 2.70% |
+| uniformly random 19-digit runs | 1.74% |
+| uniformly random 13-digit runs | 1.04% |
+| uniformly random 14/15/17/18-digit runs | 0.38% / 0.19% / 0.17% / 0.16% |
+| uniformly random 12- and 20-digit runs | 0% |
+| epoch seconds, milliseconds, microseconds, nanoseconds | 0% |
+| ISO-8601 timestamps in log lines | 0% |
+| `Math.random()` printouts, and floats inside JSON | 0% |
+| snowflake ids, 18-19 digits | 1.16% |
+| ISBN-13 | 0% |
+| IPv4 addresses | 0% |
+| E.164 phone numbers | 0.25% |
+| byte counts and durations in access-log lines | 0.25% |
+| hyphen-grouped 4-4-4-4 serials | 2.73% |
+| space-grouped 3-digit columns | 0.53% |
+| the `deepseek-harness` checkout (3,000 files, 272,635 lines, 16.9 MB) | **0** |
+| this package's own sources, docs, JSON and lockfile (78 files) | **0 false**; every finding is a published test number quoted on purpose |
+
+The first block is the rule's structural rate and is irreducible: one digit run in ten satisfies
+Luhn, and these ranges at these lengths cover 26.8% of the sixteen-digit space (measured with the
+check digit forced valid) — 2.70% is those two figures multiplied. What the last two rows say is
+that ordinary source code, documentation and machine output do not contain uniformly random
+16-digit numbers: 272,635 lines of real text this package did not write produced no finding at
+all.
+
+### What it costs the synchronous guard
+
+The guard runs tier 1 on the agent's own event loop, so a new rule is a new pass over every
+argument string. Measured over five passes each: the whole tier-1 table takes 9.3 ms per megabyte
+of log lines and 18.4 ms with this rule added, and 6.2 ms per megabyte of unbroken 40-digit runs
+against 14.1 ms with it. Roughly a doubling of tier-1 scan time, or about 9 ms per megabyte —
+acceptable against `maxScanBytes`' 1 MB default, and worth knowing before the table grows another
+rule of this shape.
+
+Two constants were chosen by measurement rather than by taste, and each has a test that fails
+without it:
+
+- **The decimal lookarounds** `(?<!\d\.)` and `(?!\.\d)`. A JavaScript float prints sixteen digits
+  after the point, one in ten of which passes Luhn. Over 200,000 `Math.random()` printouts they
+  take the rate from 1.63% to 0, and over 200,000 two-float JSON objects from 3.25% to 0.
+- **A minimum printed group of three digits.** Amounts written `4 920 007 989 245 430` are
+  sixteen digits in a shape a card number never uses. Over 200,000 of them, admitting shorter
+  groups flags 3.75%; requiring three flags 0.19%.
+
+### What it deliberately does not cover
+
+Maestro. Its ranges run from `50` and `56`-`58` through a bare leading `6` at lengths from 12 to
+19, which is most of the six-prefixed numeric space at most of the lengths an identifier uses.
+Adding it would cost far more ordinary text than it catches. `docs/redaction.md` records the gap
+rather than letting a reader infer coverage from "payment card numbers".
+
+Also uncovered, and for the reasons that already apply to every rule here: a number split across
+two messages that are not scanned together, a number written in words, and a number with a
+homoglyph in it.

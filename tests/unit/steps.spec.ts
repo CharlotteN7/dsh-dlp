@@ -25,6 +25,7 @@ const hasher = new SpanHasher(Buffer.from('dsh-dlp-unit-test-key-000000000000', 
 const policy = resolvePolicy({
   auditLog: '/dev/null',
   redactionKeyFile: '/dev/null',
+  aggressiveness: 'medium',
   maxScanBytes: 1024 * 1024,
   breadthTier: true,
   resultRedaction: true,
@@ -88,6 +89,7 @@ function policyWithout(toggle: 'stepContextRedaction' | 'claimedInputRedaction')
   return resolvePolicy({
     auditLog: '/dev/null',
     redactionKeyFile: '/dev/null',
+    aggressiveness: 'low',
     maxScanBytes: 1024 * 1024,
     breadthTier: true,
     resultRedaction: true,
@@ -192,6 +194,7 @@ describe('context a listener spliced into a step', () => {
     const capped = resolvePolicy({
       auditLog: '/dev/null',
       redactionKeyFile: '/dev/null',
+      aggressiveness: 'medium',
       maxScanBytes: 16,
       breadthTier: true,
       resultRedaction: true,
@@ -364,5 +367,90 @@ describe('the exemption for the user\'s own typing', () => {
 
     expect(isUserTyped(unknown)).toBe(false)
     expect(isUserTyped(delivered('hook-1', 'text'))).toBe(false)
+  })
+})
+
+/** The published Visa test number: a real format, never issued, never chargeable. */
+const TEST_PAN = '4111111111111111'
+
+/** The same policy at one aggressiveness level. */
+function policyAt(aggressiveness: Config['aggressiveness']) {
+  return resolvePolicy({
+    auditLog: '/dev/null',
+    redactionKeyFile: '/dev/null',
+    aggressiveness,
+    maxScanBytes: 1024 * 1024,
+    breadthTier: true,
+    resultRedaction: true,
+    telemetryRedaction: true,
+    stepContextRedaction: true,
+    claimedInputRedaction: true,
+    remoteImageNeutralization: true,
+    redactTelemetryWorkspacePaths: true,
+    configWriteAsk: true,
+    approvalSuppressionAsk: true,
+  } satisfies Config)
+}
+
+describe('the user\'s own typing at the top aggressiveness level', () => {
+  it('is redacted, because this plugin cannot know which provider the request is bound for', async () => {
+    const prompt = claimed('inbox-1', `charge my card ${TEST_PAN} for the invoice`)
+    const decision: PreStepDecision = { kind: 'enter', messages: [prompt] }
+
+    const redacted = await redactStepContext(decision, [prompt], policyAt('high'), hasher)
+    const messages = redacted.decision.kind === 'enter' ? redacted.decision.messages : []
+
+    expect(firstText(messages[0])).toContain('[REDACTED:dsh-dlp:payment-card-number:')
+    expect(firstText(messages[0])).not.toContain(TEST_PAN)
+    expect(firstText(messages[0])).toContain('for the invoice')
+    expect(redacted.spans[0]?.ruleId).toBe('dsh-dlp/payment-card-number')
+  })
+
+  it('is named in the audit record as a user source, so the operator can tell what was rewritten', async () => {
+    const prompt = claimed('inbox-1', `card ${TEST_PAN}`)
+    const delivery = delivered('hook-1', 'nothing to see')
+    const decision: PreStepDecision = { kind: 'enter', messages: [prompt, delivery] }
+
+    const redacted = await redactStepContext(decision, [prompt, delivery], policyAt('high'), hasher)
+
+    expect(redacted.claimedSources).toEqual(['user', 'webhook'])
+  })
+
+  it('is left alone at every lower level, which is the behaviour that shipped before', async () => {
+    const prompt = claimed('inbox-1', `charge my card ${TEST_PAN}`)
+    const decision: PreStepDecision = { kind: 'enter', messages: [prompt] }
+
+    for (const level of ['low', 'medium'] as const) {
+      const redacted = await redactStepContext(decision, [prompt], policyAt(level), hasher)
+
+      expect(redacted.decision).toBe(decision)
+      expect(redacted.spans).toEqual([])
+    }
+  })
+
+  it('is joined with the rest of the step, so a key split across the boundary is found', async () => {
+    // Below `high` the exempt prompt is not part of the joined rendering, so a
+    // key beginning in it and ending in a spliced file survives whole.
+    const prompt = claimed('inbox-1', PEM_LINES.slice(0, 2).join('\n'))
+    const context = spliced('ctx-1', PEM_LINES.slice(2).join('\n'))
+    const decision: PreStepDecision = { kind: 'enter', messages: [prompt, context] }
+
+    const redacted = await redactStepContext(decision, [prompt], policyAt('high'), hasher)
+    const messages = redacted.decision.kind === 'enter' ? redacted.decision.messages : []
+
+    expect(firstText(messages[0])).not.toContain(PEM_LINES[1])
+    expect(firstText(messages[1])).not.toContain(PEM_LINES[2])
+  })
+
+  it('still leaves a spliced message spliced when only the claimed toggle would cover it', async () => {
+    // `high` requires every toggle, so the two classes stay distinguishable:
+    // a message the waterfall added is never counted as claimed input.
+    const context = spliced('ctx-1', `card ${TEST_PAN}`)
+    const decision: PreStepDecision = { kind: 'enter', messages: [context] }
+
+    const redacted = await redactStepContext(decision, [], policyAt('high'), hasher)
+
+    expect(redacted.claimedSources).toEqual([])
+    expect(redacted.spans[0]?.ruleId).toBe('dsh-dlp/payment-card-number')
   })
 })

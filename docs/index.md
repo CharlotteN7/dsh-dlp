@@ -61,8 +61,9 @@ More limits worth stating up front:
   itself added — the workspace instruction chain, a captured tmux pane, a hook's
   `additionalContext`, a `/name` skill body — and `claimedInputRedaction` for the messages the
   loop claimed from the inbox that the user did not type, above all a `dsh-webhook` delivery's
-  third-party payload. **A secret the user types into their own prompt still reaches the
-  provider**, and that is the one deliberate exemption. A claimed message's earlier
+  third-party payload. **A secret the user types into their own prompt still reaches the provider
+  below `aggressiveness: high`**, and that is the one exemption; at `high` it is redacted too,
+  because this plugin cannot know which provider the request is bound for. A claimed message's earlier
   `agent/inbox/spliced` delivery record also keeps its original text: that event is not one of
   the three surface event types, so it derives no model message, and keeping a third party's
   delivery there verbatim is what an incident investigation needs. The web client's queue view
@@ -77,6 +78,13 @@ More limits worth stating up front:
   hex, URL-escaping and reversal all pass both tiers, as does a secret split across two
   content blocks. **A homoglyph defeats every rule in this package**, including the
   invisible-character ones.
+- **The payment card rule trades a measured false-positive rate for coverage.** Issuer range, a
+  length that issuer assigns and a Luhn check digit found nothing across the 272,635 lines of the
+  `deepseek-harness` checkout, but a *uniformly random* 16-digit number trips it 2.7% of the time,
+  because one digit run in ten satisfies Luhn. If your tool output carries uniformly random long
+  numbers, that is the figure to weigh — at `aggressiveness: high` this rule runs over every
+  prompt a person types. Maestro is not covered at all.
+  [What the rule tests and what it measured →](redaction.md#payment-card-numbers)
 - **There is no entropy rule, and that was measured rather than assumed.** Shannon entropy is
   bounded by log₂L for a string of length L, so a threshold of *t* bits per character can never
   flag anything shorter than 2^*t*. At the lowest threshold that produces **no** false positives

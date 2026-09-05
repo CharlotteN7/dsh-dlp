@@ -444,3 +444,138 @@ describe('invisible and direction-changing characters', () => {
     }
   })
 })
+
+/** Only the card rule, so a fixture's other properties cannot supply the match. */
+const CARD_RULE = SYNC_RULES.filter(rule => rule.id === 'dsh-dlp/payment-card-number')
+
+/**
+ * The card numbers payment processors publish for testing. None was ever
+ * issued and none can be charged; they exist so that a real-format number can
+ * appear in a test file.
+ */
+const TEST_PANS: Readonly<Record<string, string>> = {
+  visa16: '4111111111111111',
+  visa16Alternate: '4012888888881881',
+  visa16Third: '4035501000000008',
+  visa13: '4222222222222',
+  mastercard: '5555555555554444',
+  mastercard2Series: '2223003122003222',
+  amex: '378282246310005',
+  amexAlternate: '371449635398431',
+  discover: '6011111111111117',
+  jcb: '3530111333300000',
+  diners: '30569309025904',
+  unionpay: '6250947000000014',
+}
+
+/** The text a scan covered, or `undefined` when it found nothing. */
+function covered(text: string): string | undefined {
+  const { detections } = scanSync(text, CARD_RULE)
+  if (detections.length !== 1) return undefined
+  return text.slice(detections[0]?.start, detections[0]?.end)
+}
+
+describe('the payment card rule', () => {
+  it('finds a test number from every issuer it covers', () => {
+    const found = Object.fromEntries(
+      Object.entries(TEST_PANS).map(([issuer, pan]) => [issuer, covered(`charge ${pan} now`)]),
+    )
+
+    expect(found).toEqual(TEST_PANS)
+  })
+
+  it('covers exactly the number, so the words around it survive', () => {
+    const text = `pay 4111111111111111 today`
+    const { detections } = scanSync(text, CARD_RULE)
+
+    expect(detections[0]).toMatchObject({ severity: 'medium', exact: true })
+    expect(text.slice(detections[0]?.start, detections[0]?.end)).toBe('4111111111111111')
+  })
+
+  it('finds a number printed in groups, however the groups are separated', () => {
+    expect(covered('card 4111 1111 1111 1111 ok')).toBe('4111 1111 1111 1111')
+    expect(covered('card 4111-1111-1111-1111 ok')).toBe('4111-1111-1111-1111')
+    expect(covered('amex 3782 822463 10005 ok')).toBe('3782 822463 10005')
+  })
+
+  it('finds the nineteen-digit numbers the ranges also allow', () => {
+    // No processor publishes a 19-digit test number, so each of these is built
+    // here: a documented range prefix, zeroes, and a check digit computed for
+    // this file. They are the lengths the ranges admit beyond the common 16.
+    expect(covered('card 4000000000000000006 ok')).toBe('4000000000000000006')
+    expect(covered('card 6221260000000000001 ok')).toBe('6221260000000000001')
+    expect(covered('card 3528000000000000007 ok')).toBe('3528000000000000007')
+  })
+
+  it('finds the number beside the expiry date it was typed with', () => {
+    // The pattern is greedy across printed groups, so this arrives as one
+    // candidate and the expiry has to be dropped from the reported span.
+    expect(covered('4111 1111 1111 1111 0126')).toBe('4111 1111 1111 1111')
+    expect(covered('order 2026 4111 1111 1111 1111')).toBe('4111 1111 1111 1111')
+  })
+
+  it('abstains when the check digit is wrong', () => {
+    expect(scanSync('4111111111111112', CARD_RULE).detections).toEqual([])
+  })
+
+  it('abstains on a length no issuer in the range assigns', () => {
+    // Both Luhn-valid and Visa-prefixed, but fourteen and seventeen digits:
+    // Visa issues 13, 16 and 19, so length is the only thing rejecting these.
+    expect(scanSync('41111111111114', CARD_RULE).detections).toEqual([])
+    expect(scanSync('41111111111111113', CARD_RULE).detections).toEqual([])
+  })
+
+  it('abstains on a digit run whose leading digits are no issuer at all', () => {
+    expect(scanSync('1234567890123452', CARD_RULE).detections).toEqual([])
+  })
+
+  it('does not report a card-shaped window of a longer identifier', () => {
+    // Each of these opens with the sixteen digits of the Visa test number. An
+    // unbroken run is one candidate, whole: the reported span never starts or
+    // ends inside it, so a longer identifier is either a card number or
+    // nothing rather than a card number with a tail.
+    expect(scanSync('41111111111111119999', CARD_RULE).detections).toEqual([])
+    expect(scanSync('4111111111111111111', CARD_RULE).detections).toEqual([])
+    expect(scanSync('41111111111111117', CARD_RULE).detections).toEqual([])
+  })
+
+  it('leaves the fractional part of a decimal alone', () => {
+    // `Math.random()` prints sixteen digits after the point; one in ten of
+    // those passes Luhn, and this is the shape they arrive in.
+    expect(scanSync('{"score":0.4111111111111111}', CARD_RULE).detections).toEqual([])
+    expect(scanSync('ratio 12.4111111111111111 ok', CARD_RULE).detections).toEqual([])
+  })
+
+  it('leaves a timestamp alone', () => {
+    expect(scanSync('1757068800000', CARD_RULE).detections).toEqual([])
+    expect(scanSync('2026-09-05T08:00:00Z seq=1757068800123456', CARD_RULE).detections).toEqual([])
+  })
+
+  it('leaves digits that a letter or an underscore runs into alone', () => {
+    expect(scanSync('order4111111111111111', CARD_RULE).detections).toEqual([])
+    expect(scanSync('id_4111111111111111', CARD_RULE).detections).toEqual([])
+  })
+
+  it('does not read a number written with thousands separators as a card', () => {
+    // Sixteen digits, spaced in threes behind a single leading digit, and
+    // Luhn-valid: an amount in the style half of Europe writes them in. A
+    // printed card number is grouped in threes at the shortest, and requiring
+    // that takes this shape from 3.75 percent of such amounts to 0.19.
+    expect(scanSync('total 4 920 007 989 245 430 EUR', CARD_RULE).detections).toEqual([])
+    expect(scanSync('total 4 113 038 133 921 904 EUR', CARD_RULE).detections).toEqual([])
+  })
+
+  it('reaches the telemetry seam, which cannot await the second tier', () => {
+    // Tier 2 has no card rule at all, so a number that only tier 2 knew about
+    // would be exported in the clear whenever telemetry is on.
+    expect(scanSync('4111111111111111', SYNC_RULES).detections).toHaveLength(1)
+  })
+
+  it('stays below the severity at which the guard floor denies', () => {
+    // A denial from this rule could not be overridden, and its false positives
+    // are ordinary long numbers rather than malformed credentials.
+    const rule = SYNC_RULES.find(candidate => candidate.id === 'dsh-dlp/payment-card-number')
+
+    expect(severityRank(rule?.severity ?? 'critical')).toBeLessThan(severityRank(DENY_SEVERITY))
+  })
+})
